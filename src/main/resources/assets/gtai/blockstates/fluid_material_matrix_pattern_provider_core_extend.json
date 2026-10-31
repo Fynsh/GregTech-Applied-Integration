@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/fluid_material_matrix_pattern_provider_core_extend"
+    }
+  }
+}

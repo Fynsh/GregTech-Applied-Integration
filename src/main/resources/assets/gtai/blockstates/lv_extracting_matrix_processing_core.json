@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/lv_extracting_matrix_processing_core"
+    }
+  }
+}

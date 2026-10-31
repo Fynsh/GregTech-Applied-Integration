@@ -1,0 +1,7 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {"particle": "gtai:block/other/empty_core", "l0": "gtai:block/other/empty_core"},
+  "elements": [
+    {"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#l0","cullface":"down"},"up":{"texture":"#l0","cullface":"up"},"north":{"texture":"#l0","cullface":"north"},"south":{"texture":"#l0","cullface":"south"},"west":{"texture":"#l0","cullface":"west"},"east":{"texture":"#l0","cullface":"east"}}}
+  ]
+}

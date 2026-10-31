@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.Fynsh.gtai.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [],
+  "client": [
+    "EncodePatternTransferHandlerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

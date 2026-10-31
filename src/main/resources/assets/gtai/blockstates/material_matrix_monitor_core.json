@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/material_matrix_monitor_core"
+    }
+  }
+}

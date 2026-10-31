@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/circuit_assembly_matrix_pattern_provider_core"
+    }
+  }
+}

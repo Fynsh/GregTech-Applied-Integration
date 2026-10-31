@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/luv_forming_matrix_processing_core"
+    }
+  }
+}

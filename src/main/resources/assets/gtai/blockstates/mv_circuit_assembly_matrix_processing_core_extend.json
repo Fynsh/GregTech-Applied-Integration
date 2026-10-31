@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/mv_circuit_assembly_matrix_processing_core_extend"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/lv_assembly_matrix_processing_core_extend"
+    }
+  }
+}

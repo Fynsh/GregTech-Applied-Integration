@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/mv_fluid_material_matrix_speed_core"
+    }
+  }
+}

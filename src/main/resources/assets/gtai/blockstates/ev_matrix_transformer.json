@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/ev_matrix_transformer"
+    }
+  }
+}

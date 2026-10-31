@@ -1,0 +1,11 @@
+{
+  "parent": "minecraft:block/block",
+  "render_type": "minecraft:cutout",
+  "textures": {"particle": "gtai:block/pec5/background", "l0": "gtai:block/pec5/background", "l1": "gtai:block/type/fluid_material", "l2": "gtai:block/pec5/voltage_hv", "l3": "gtai:block/pec5/overlay_extracting"},
+  "elements": [
+    {"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#l0","cullface":"down"},"up":{"texture":"#l0","cullface":"up"},"north":{"texture":"#l0","cullface":"north"},"south":{"texture":"#l0","cullface":"south"},"west":{"texture":"#l0","cullface":"west"},"east":{"texture":"#l0","cullface":"east"}}},
+    {"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#l1","cullface":"down"},"up":{"texture":"#l1","cullface":"up"},"north":{"texture":"#l1","cullface":"north"},"south":{"texture":"#l1","cullface":"south"},"west":{"texture":"#l1","cullface":"west"},"east":{"texture":"#l1","cullface":"east"}}},
+    {"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#l2","cullface":"down"},"up":{"texture":"#l2","cullface":"up"},"north":{"texture":"#l2","cullface":"north"},"south":{"texture":"#l2","cullface":"south"},"west":{"texture":"#l2","cullface":"west"},"east":{"texture":"#l2","cullface":"east"}}},
+    {"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#l3","cullface":"down"},"up":{"texture":"#l3","cullface":"up"},"north":{"texture":"#l3","cullface":"north"},"south":{"texture":"#l3","cullface":"south"},"west":{"texture":"#l3","cullface":"west"},"east":{"texture":"#l3","cullface":"east"}}}
+  ]
+}

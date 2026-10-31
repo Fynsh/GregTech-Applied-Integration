@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/matrix_active_transformer"
+    }
+  }
+}

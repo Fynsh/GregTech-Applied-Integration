@@ -1,0 +1,251 @@
+方块注册映射（最终）
+============================================================
+
+一、注册名规则（变量在前、类型词在后；"应用集成矩阵"译作 matrix）
+  F2PL 框架              <level>_<shell>_matrix_frame
+  F2PL 超净框架          <level>_<shell>_matrix_cleanroom_frame
+  F2PL 玻璃              <level>_matrix_glass
+  F2PL 超净玻璃          <level>_matrix_cleanroom_glass
+  样板供应器核心         <shell>_matrix_pattern_provider_core
+  样板供应器核心(扩展)   <shell>_matrix_pattern_provider_core_extend
+  处理核心               <voltage>_<process>_matrix_processing_core
+  处理核心(扩展)         <voltage>_<process>_matrix_processing_core_extend
+  速度核心               <voltage>_<shell>_matrix_speed_core
+  速度核心(扩展)         <voltage>_<shell>_matrix_speed_core_extend
+  监控器核心             <shell>_matrix_monitor_core
+  监控器核心(扩展)       <shell>_matrix_monitor_core_extend
+  变压器                 <voltage>_matrix_transformer
+  其它                   matrix_cleanroom / matrix_filter_casing / matrix_sterile_filter_casing
+                         matrix_active_transformer / empty_matrix_core
+
+  注意：扩展变体的注册名把 extend 放在最后；中文名与英文名仍把"扩展 / Extended"放在前面。
+
+  词表 level   = basic, advanced, elite, ultimate
+       shell   = assembly, circuit_assembly, material, fluid_material
+       voltage = lv, mv, hv, ev, iv, luv
+       process = assembly, circuit_assembly, cutting, pulverizing, forming, solidifying, extracting
+
+二、层叠顺序（模型里 element 从下到上；空层不生成 element）
+  F2PL 框架      框架 / 框架-超净 → 类型渲染层{T} → 等级渲染层{L}
+  F2PL 玻璃      玻璃 / 玻璃-超净 → 等级渲染层{L}
+  PEC5 供应器    核心渲染背景 → 类型{T} → [扩展渲染层] → 应用集成样板供应器
+  PEC5 处理核心  核心渲染背景 → 类型{PT对应外壳} → [扩展渲染层] → 电压等级{V} → 覆盖版{PT}
+  PEC5 速度核心  核心渲染背景 → 类型{T} → [扩展渲染层] → 电压等级{V} → 覆盖版/速度
+  PEC5 监控器    核心渲染背景 → 类型{T} → [扩展渲染层] → 应用集成监控器
+  PEC5 变压器    核心渲染背景 → 电压等级{V} → 覆盖版/变压器
+  其它           单层贴图；超净间为 top/side/bottom 三面
+
+  玻璃族（玻璃 / 超净玻璃）的底图带透明孔洞，注册时额外 noOcclusion()：
+  否则相邻方块的贴合面会被剔除，透过孔洞会看到空洞。
+  其余方块（底图不透明）正常遮挡相邻面。
+
+三、资源位置
+  贴图    assets/gtai/textures/block/<f2pl|pec5|type|other>/<层>.png   （38 张，逐层独立、未烘焙）
+  模型    assets/gtai/models/block/<id>.json                           （199，每层一个 element）
+  方块状态 assets/gtai/blockstates/<id>.json                           （199）
+  物品模型 assets/gtai/models/item/<id>.json                           （199）
+  战利品表 data/gtai/loot_tables/blocks/<id>.json                      （199，掉落自身）
+  挖掘标签 data/minecraft/tags/blocks/mineable/pickaxe.json             （199 项）
+  语言    assets/gtai/lang/{zh_cn,en_us}.json 的 block.gtai.<id>
+
+四、199 条映射（中文名 <TAB> 注册名 <TAB> 英文名）
+============================================================
+基础组装应用集成矩阵框架	gtai:basic_assembly_matrix_frame	Basic Assembly Matrix Frame
+基础电路组装应用集成矩阵框架	gtai:basic_circuit_assembly_matrix_frame	Basic Circuit Assembly Matrix Frame
+基础材料应用集成矩阵框架	gtai:basic_material_matrix_frame	Basic Material Matrix Frame
+基础流体材料应用集成矩阵框架	gtai:basic_fluid_material_matrix_frame	Basic Fluid Material Matrix Frame
+高级组装应用集成矩阵框架	gtai:advanced_assembly_matrix_frame	Advanced Assembly Matrix Frame
+高级电路组装应用集成矩阵框架	gtai:advanced_circuit_assembly_matrix_frame	Advanced Circuit Assembly Matrix Frame
+高级材料应用集成矩阵框架	gtai:advanced_material_matrix_frame	Advanced Material Matrix Frame
+高级流体材料应用集成矩阵框架	gtai:advanced_fluid_material_matrix_frame	Advanced Fluid Material Matrix Frame
+精英组装应用集成矩阵框架	gtai:elite_assembly_matrix_frame	Elite Assembly Matrix Frame
+精英电路组装应用集成矩阵框架	gtai:elite_circuit_assembly_matrix_frame	Elite Circuit Assembly Matrix Frame
+精英材料应用集成矩阵框架	gtai:elite_material_matrix_frame	Elite Material Matrix Frame
+精英流体材料应用集成矩阵框架	gtai:elite_fluid_material_matrix_frame	Elite Fluid Material Matrix Frame
+终极组装应用集成矩阵框架	gtai:ultimate_assembly_matrix_frame	Ultimate Assembly Matrix Frame
+终极电路组装应用集成矩阵框架	gtai:ultimate_circuit_assembly_matrix_frame	Ultimate Circuit Assembly Matrix Frame
+终极材料应用集成矩阵框架	gtai:ultimate_material_matrix_frame	Ultimate Material Matrix Frame
+终极流体材料应用集成矩阵框架	gtai:ultimate_fluid_material_matrix_frame	Ultimate Fluid Material Matrix Frame
+基础组装应用集成矩阵超净框架	gtai:basic_assembly_matrix_cleanroom_frame	Basic Assembly Matrix Cleanroom Frame
+基础电路组装应用集成矩阵超净框架	gtai:basic_circuit_assembly_matrix_cleanroom_frame	Basic Circuit Assembly Matrix Cleanroom Frame
+基础材料应用集成矩阵超净框架	gtai:basic_material_matrix_cleanroom_frame	Basic Material Matrix Cleanroom Frame
+基础流体材料应用集成矩阵超净框架	gtai:basic_fluid_material_matrix_cleanroom_frame	Basic Fluid Material Matrix Cleanroom Frame
+高级组装应用集成矩阵超净框架	gtai:advanced_assembly_matrix_cleanroom_frame	Advanced Assembly Matrix Cleanroom Frame
+高级电路组装应用集成矩阵超净框架	gtai:advanced_circuit_assembly_matrix_cleanroom_frame	Advanced Circuit Assembly Matrix Cleanroom Frame
+高级材料应用集成矩阵超净框架	gtai:advanced_material_matrix_cleanroom_frame	Advanced Material Matrix Cleanroom Frame
+高级流体材料应用集成矩阵超净框架	gtai:advanced_fluid_material_matrix_cleanroom_frame	Advanced Fluid Material Matrix Cleanroom Frame
+精英组装应用集成矩阵超净框架	gtai:elite_assembly_matrix_cleanroom_frame	Elite Assembly Matrix Cleanroom Frame
+精英电路组装应用集成矩阵超净框架	gtai:elite_circuit_assembly_matrix_cleanroom_frame	Elite Circuit Assembly Matrix Cleanroom Frame
+精英材料应用集成矩阵超净框架	gtai:elite_material_matrix_cleanroom_frame	Elite Material Matrix Cleanroom Frame
+精英流体材料应用集成矩阵超净框架	gtai:elite_fluid_material_matrix_cleanroom_frame	Elite Fluid Material Matrix Cleanroom Frame
+终极组装应用集成矩阵超净框架	gtai:ultimate_assembly_matrix_cleanroom_frame	Ultimate Assembly Matrix Cleanroom Frame
+终极电路组装应用集成矩阵超净框架	gtai:ultimate_circuit_assembly_matrix_cleanroom_frame	Ultimate Circuit Assembly Matrix Cleanroom Frame
+终极材料应用集成矩阵超净框架	gtai:ultimate_material_matrix_cleanroom_frame	Ultimate Material Matrix Cleanroom Frame
+终极流体材料应用集成矩阵超净框架	gtai:ultimate_fluid_material_matrix_cleanroom_frame	Ultimate Fluid Material Matrix Cleanroom Frame
+基础应用集成矩阵玻璃	gtai:basic_matrix_glass	Basic Matrix Glass
+高级应用集成矩阵玻璃	gtai:advanced_matrix_glass	Advanced Matrix Glass
+精英应用集成矩阵玻璃	gtai:elite_matrix_glass	Elite Matrix Glass
+终极应用集成矩阵玻璃	gtai:ultimate_matrix_glass	Ultimate Matrix Glass
+基础应用集成矩阵超净玻璃	gtai:basic_matrix_cleanroom_glass	Basic Matrix Cleanroom Glass
+高级应用集成矩阵超净玻璃	gtai:advanced_matrix_cleanroom_glass	Advanced Matrix Cleanroom Glass
+精英应用集成矩阵超净玻璃	gtai:elite_matrix_cleanroom_glass	Elite Matrix Cleanroom Glass
+终极应用集成矩阵超净玻璃	gtai:ultimate_matrix_cleanroom_glass	Ultimate Matrix Cleanroom Glass
+应用集成样板供应器组装矩阵核心	gtai:assembly_matrix_pattern_provider_core	Assembly Matrix Pattern Provider Core
+应用集成样板供应器电路组装矩阵核心	gtai:circuit_assembly_matrix_pattern_provider_core	Circuit Assembly Matrix Pattern Provider Core
+应用集成样板供应器材料矩阵核心	gtai:material_matrix_pattern_provider_core	Material Matrix Pattern Provider Core
+应用集成样板供应器流体材料矩阵核心	gtai:fluid_material_matrix_pattern_provider_core	Fluid Material Matrix Pattern Provider Core
+应用集成扩展样板供应器组装矩阵核心	gtai:assembly_matrix_pattern_provider_core_extend	Extended Assembly Matrix Pattern Provider Core
+应用集成扩展样板供应器电路组装矩阵核心	gtai:circuit_assembly_matrix_pattern_provider_core_extend	Extended Circuit Assembly Matrix Pattern Provider Core
+应用集成扩展样板供应器材料矩阵核心	gtai:material_matrix_pattern_provider_core_extend	Extended Material Matrix Pattern Provider Core
+应用集成扩展样板供应器流体材料矩阵核心	gtai:fluid_material_matrix_pattern_provider_core_extend	Extended Fluid Material Matrix Pattern Provider Core
+应用集成矩阵LV组装处理核心	gtai:lv_assembly_matrix_processing_core	LV Assembly Matrix Processing Core
+应用集成矩阵LV电路组装处理核心	gtai:lv_circuit_assembly_matrix_processing_core	LV Circuit Assembly Matrix Processing Core
+应用集成矩阵LV切削处理核心	gtai:lv_cutting_matrix_processing_core	LV Cutting Matrix Processing Core
+应用集成矩阵LV粉碎处理核心	gtai:lv_pulverizing_matrix_processing_core	LV Pulverizing Matrix Processing Core
+应用集成矩阵LV成型处理核心	gtai:lv_forming_matrix_processing_core	LV Forming Matrix Processing Core
+应用集成矩阵LV固化处理核心	gtai:lv_solidifying_matrix_processing_core	LV Solidifying Matrix Processing Core
+应用集成矩阵LV提取处理核心	gtai:lv_extracting_matrix_processing_core	LV Extracting Matrix Processing Core
+应用集成矩阵MV组装处理核心	gtai:mv_assembly_matrix_processing_core	MV Assembly Matrix Processing Core
+应用集成矩阵MV电路组装处理核心	gtai:mv_circuit_assembly_matrix_processing_core	MV Circuit Assembly Matrix Processing Core
+应用集成矩阵MV切削处理核心	gtai:mv_cutting_matrix_processing_core	MV Cutting Matrix Processing Core
+应用集成矩阵MV粉碎处理核心	gtai:mv_pulverizing_matrix_processing_core	MV Pulverizing Matrix Processing Core
+应用集成矩阵MV成型处理核心	gtai:mv_forming_matrix_processing_core	MV Forming Matrix Processing Core
+应用集成矩阵MV固化处理核心	gtai:mv_solidifying_matrix_processing_core	MV Solidifying Matrix Processing Core
+应用集成矩阵MV提取处理核心	gtai:mv_extracting_matrix_processing_core	MV Extracting Matrix Processing Core
+应用集成矩阵HV组装处理核心	gtai:hv_assembly_matrix_processing_core	HV Assembly Matrix Processing Core
+应用集成矩阵HV电路组装处理核心	gtai:hv_circuit_assembly_matrix_processing_core	HV Circuit Assembly Matrix Processing Core
+应用集成矩阵HV切削处理核心	gtai:hv_cutting_matrix_processing_core	HV Cutting Matrix Processing Core
+应用集成矩阵HV粉碎处理核心	gtai:hv_pulverizing_matrix_processing_core	HV Pulverizing Matrix Processing Core
+应用集成矩阵HV成型处理核心	gtai:hv_forming_matrix_processing_core	HV Forming Matrix Processing Core
+应用集成矩阵HV固化处理核心	gtai:hv_solidifying_matrix_processing_core	HV Solidifying Matrix Processing Core
+应用集成矩阵HV提取处理核心	gtai:hv_extracting_matrix_processing_core	HV Extracting Matrix Processing Core
+应用集成矩阵EV组装处理核心	gtai:ev_assembly_matrix_processing_core	EV Assembly Matrix Processing Core
+应用集成矩阵EV电路组装处理核心	gtai:ev_circuit_assembly_matrix_processing_core	EV Circuit Assembly Matrix Processing Core
+应用集成矩阵EV切削处理核心	gtai:ev_cutting_matrix_processing_core	EV Cutting Matrix Processing Core
+应用集成矩阵EV粉碎处理核心	gtai:ev_pulverizing_matrix_processing_core	EV Pulverizing Matrix Processing Core
+应用集成矩阵EV成型处理核心	gtai:ev_forming_matrix_processing_core	EV Forming Matrix Processing Core
+应用集成矩阵EV固化处理核心	gtai:ev_solidifying_matrix_processing_core	EV Solidifying Matrix Processing Core
+应用集成矩阵EV提取处理核心	gtai:ev_extracting_matrix_processing_core	EV Extracting Matrix Processing Core
+应用集成矩阵IV组装处理核心	gtai:iv_assembly_matrix_processing_core	IV Assembly Matrix Processing Core
+应用集成矩阵IV电路组装处理核心	gtai:iv_circuit_assembly_matrix_processing_core	IV Circuit Assembly Matrix Processing Core
+应用集成矩阵IV切削处理核心	gtai:iv_cutting_matrix_processing_core	IV Cutting Matrix Processing Core
+应用集成矩阵IV粉碎处理核心	gtai:iv_pulverizing_matrix_processing_core	IV Pulverizing Matrix Processing Core
+应用集成矩阵IV成型处理核心	gtai:iv_forming_matrix_processing_core	IV Forming Matrix Processing Core
+应用集成矩阵IV固化处理核心	gtai:iv_solidifying_matrix_processing_core	IV Solidifying Matrix Processing Core
+应用集成矩阵IV提取处理核心	gtai:iv_extracting_matrix_processing_core	IV Extracting Matrix Processing Core
+应用集成矩阵LuV组装处理核心	gtai:luv_assembly_matrix_processing_core	LuV Assembly Matrix Processing Core
+应用集成矩阵LuV电路组装处理核心	gtai:luv_circuit_assembly_matrix_processing_core	LuV Circuit Assembly Matrix Processing Core
+应用集成矩阵LuV切削处理核心	gtai:luv_cutting_matrix_processing_core	LuV Cutting Matrix Processing Core
+应用集成矩阵LuV粉碎处理核心	gtai:luv_pulverizing_matrix_processing_core	LuV Pulverizing Matrix Processing Core
+应用集成矩阵LuV成型处理核心	gtai:luv_forming_matrix_processing_core	LuV Forming Matrix Processing Core
+应用集成矩阵LuV固化处理核心	gtai:luv_solidifying_matrix_processing_core	LuV Solidifying Matrix Processing Core
+应用集成矩阵LuV提取处理核心	gtai:luv_extracting_matrix_processing_core	LuV Extracting Matrix Processing Core
+应用集成矩阵扩展LV组装处理核心	gtai:lv_assembly_matrix_processing_core_extend	Extended LV Assembly Matrix Processing Core
+应用集成矩阵扩展LV电路组装处理核心	gtai:lv_circuit_assembly_matrix_processing_core_extend	Extended LV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展LV切削处理核心	gtai:lv_cutting_matrix_processing_core_extend	Extended LV Cutting Matrix Processing Core
+应用集成矩阵扩展LV粉碎处理核心	gtai:lv_pulverizing_matrix_processing_core_extend	Extended LV Pulverizing Matrix Processing Core
+应用集成矩阵扩展LV成型处理核心	gtai:lv_forming_matrix_processing_core_extend	Extended LV Forming Matrix Processing Core
+应用集成矩阵扩展LV固化处理核心	gtai:lv_solidifying_matrix_processing_core_extend	Extended LV Solidifying Matrix Processing Core
+应用集成矩阵扩展LV提取处理核心	gtai:lv_extracting_matrix_processing_core_extend	Extended LV Extracting Matrix Processing Core
+应用集成矩阵扩展MV组装处理核心	gtai:mv_assembly_matrix_processing_core_extend	Extended MV Assembly Matrix Processing Core
+应用集成矩阵扩展MV电路组装处理核心	gtai:mv_circuit_assembly_matrix_processing_core_extend	Extended MV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展MV切削处理核心	gtai:mv_cutting_matrix_processing_core_extend	Extended MV Cutting Matrix Processing Core
+应用集成矩阵扩展MV粉碎处理核心	gtai:mv_pulverizing_matrix_processing_core_extend	Extended MV Pulverizing Matrix Processing Core
+应用集成矩阵扩展MV成型处理核心	gtai:mv_forming_matrix_processing_core_extend	Extended MV Forming Matrix Processing Core
+应用集成矩阵扩展MV固化处理核心	gtai:mv_solidifying_matrix_processing_core_extend	Extended MV Solidifying Matrix Processing Core
+应用集成矩阵扩展MV提取处理核心	gtai:mv_extracting_matrix_processing_core_extend	Extended MV Extracting Matrix Processing Core
+应用集成矩阵扩展HV组装处理核心	gtai:hv_assembly_matrix_processing_core_extend	Extended HV Assembly Matrix Processing Core
+应用集成矩阵扩展HV电路组装处理核心	gtai:hv_circuit_assembly_matrix_processing_core_extend	Extended HV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展HV切削处理核心	gtai:hv_cutting_matrix_processing_core_extend	Extended HV Cutting Matrix Processing Core
+应用集成矩阵扩展HV粉碎处理核心	gtai:hv_pulverizing_matrix_processing_core_extend	Extended HV Pulverizing Matrix Processing Core
+应用集成矩阵扩展HV成型处理核心	gtai:hv_forming_matrix_processing_core_extend	Extended HV Forming Matrix Processing Core
+应用集成矩阵扩展HV固化处理核心	gtai:hv_solidifying_matrix_processing_core_extend	Extended HV Solidifying Matrix Processing Core
+应用集成矩阵扩展HV提取处理核心	gtai:hv_extracting_matrix_processing_core_extend	Extended HV Extracting Matrix Processing Core
+应用集成矩阵扩展EV组装处理核心	gtai:ev_assembly_matrix_processing_core_extend	Extended EV Assembly Matrix Processing Core
+应用集成矩阵扩展EV电路组装处理核心	gtai:ev_circuit_assembly_matrix_processing_core_extend	Extended EV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展EV切削处理核心	gtai:ev_cutting_matrix_processing_core_extend	Extended EV Cutting Matrix Processing Core
+应用集成矩阵扩展EV粉碎处理核心	gtai:ev_pulverizing_matrix_processing_core_extend	Extended EV Pulverizing Matrix Processing Core
+应用集成矩阵扩展EV成型处理核心	gtai:ev_forming_matrix_processing_core_extend	Extended EV Forming Matrix Processing Core
+应用集成矩阵扩展EV固化处理核心	gtai:ev_solidifying_matrix_processing_core_extend	Extended EV Solidifying Matrix Processing Core
+应用集成矩阵扩展EV提取处理核心	gtai:ev_extracting_matrix_processing_core_extend	Extended EV Extracting Matrix Processing Core
+应用集成矩阵扩展IV组装处理核心	gtai:iv_assembly_matrix_processing_core_extend	Extended IV Assembly Matrix Processing Core
+应用集成矩阵扩展IV电路组装处理核心	gtai:iv_circuit_assembly_matrix_processing_core_extend	Extended IV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展IV切削处理核心	gtai:iv_cutting_matrix_processing_core_extend	Extended IV Cutting Matrix Processing Core
+应用集成矩阵扩展IV粉碎处理核心	gtai:iv_pulverizing_matrix_processing_core_extend	Extended IV Pulverizing Matrix Processing Core
+应用集成矩阵扩展IV成型处理核心	gtai:iv_forming_matrix_processing_core_extend	Extended IV Forming Matrix Processing Core
+应用集成矩阵扩展IV固化处理核心	gtai:iv_solidifying_matrix_processing_core_extend	Extended IV Solidifying Matrix Processing Core
+应用集成矩阵扩展IV提取处理核心	gtai:iv_extracting_matrix_processing_core_extend	Extended IV Extracting Matrix Processing Core
+应用集成矩阵扩展LuV组装处理核心	gtai:luv_assembly_matrix_processing_core_extend	Extended LuV Assembly Matrix Processing Core
+应用集成矩阵扩展LuV电路组装处理核心	gtai:luv_circuit_assembly_matrix_processing_core_extend	Extended LuV Circuit Assembly Matrix Processing Core
+应用集成矩阵扩展LuV切削处理核心	gtai:luv_cutting_matrix_processing_core_extend	Extended LuV Cutting Matrix Processing Core
+应用集成矩阵扩展LuV粉碎处理核心	gtai:luv_pulverizing_matrix_processing_core_extend	Extended LuV Pulverizing Matrix Processing Core
+应用集成矩阵扩展LuV成型处理核心	gtai:luv_forming_matrix_processing_core_extend	Extended LuV Forming Matrix Processing Core
+应用集成矩阵扩展LuV固化处理核心	gtai:luv_solidifying_matrix_processing_core_extend	Extended LuV Solidifying Matrix Processing Core
+应用集成矩阵扩展LuV提取处理核心	gtai:luv_extracting_matrix_processing_core_extend	Extended LuV Extracting Matrix Processing Core
+应用集成矩阵LV组装速度核心	gtai:lv_assembly_matrix_speed_core	LV Assembly Matrix Speed Core
+应用集成矩阵LV电路组装速度核心	gtai:lv_circuit_assembly_matrix_speed_core	LV Circuit Assembly Matrix Speed Core
+应用集成矩阵LV材料速度核心	gtai:lv_material_matrix_speed_core	LV Material Matrix Speed Core
+应用集成矩阵LV流体材料速度核心	gtai:lv_fluid_material_matrix_speed_core	LV Fluid Material Matrix Speed Core
+应用集成矩阵MV组装速度核心	gtai:mv_assembly_matrix_speed_core	MV Assembly Matrix Speed Core
+应用集成矩阵MV电路组装速度核心	gtai:mv_circuit_assembly_matrix_speed_core	MV Circuit Assembly Matrix Speed Core
+应用集成矩阵MV材料速度核心	gtai:mv_material_matrix_speed_core	MV Material Matrix Speed Core
+应用集成矩阵MV流体材料速度核心	gtai:mv_fluid_material_matrix_speed_core	MV Fluid Material Matrix Speed Core
+应用集成矩阵HV组装速度核心	gtai:hv_assembly_matrix_speed_core	HV Assembly Matrix Speed Core
+应用集成矩阵HV电路组装速度核心	gtai:hv_circuit_assembly_matrix_speed_core	HV Circuit Assembly Matrix Speed Core
+应用集成矩阵HV材料速度核心	gtai:hv_material_matrix_speed_core	HV Material Matrix Speed Core
+应用集成矩阵HV流体材料速度核心	gtai:hv_fluid_material_matrix_speed_core	HV Fluid Material Matrix Speed Core
+应用集成矩阵EV组装速度核心	gtai:ev_assembly_matrix_speed_core	EV Assembly Matrix Speed Core
+应用集成矩阵EV电路组装速度核心	gtai:ev_circuit_assembly_matrix_speed_core	EV Circuit Assembly Matrix Speed Core
+应用集成矩阵EV材料速度核心	gtai:ev_material_matrix_speed_core	EV Material Matrix Speed Core
+应用集成矩阵EV流体材料速度核心	gtai:ev_fluid_material_matrix_speed_core	EV Fluid Material Matrix Speed Core
+应用集成矩阵IV组装速度核心	gtai:iv_assembly_matrix_speed_core	IV Assembly Matrix Speed Core
+应用集成矩阵IV电路组装速度核心	gtai:iv_circuit_assembly_matrix_speed_core	IV Circuit Assembly Matrix Speed Core
+应用集成矩阵IV材料速度核心	gtai:iv_material_matrix_speed_core	IV Material Matrix Speed Core
+应用集成矩阵IV流体材料速度核心	gtai:iv_fluid_material_matrix_speed_core	IV Fluid Material Matrix Speed Core
+应用集成矩阵LuV组装速度核心	gtai:luv_assembly_matrix_speed_core	LuV Assembly Matrix Speed Core
+应用集成矩阵LuV电路组装速度核心	gtai:luv_circuit_assembly_matrix_speed_core	LuV Circuit Assembly Matrix Speed Core
+应用集成矩阵LuV材料速度核心	gtai:luv_material_matrix_speed_core	LuV Material Matrix Speed Core
+应用集成矩阵LuV流体材料速度核心	gtai:luv_fluid_material_matrix_speed_core	LuV Fluid Material Matrix Speed Core
+应用集成矩阵扩展LV组装速度核心	gtai:lv_assembly_matrix_speed_core_extend	Extended LV Assembly Matrix Speed Core
+应用集成矩阵扩展LV电路组装速度核心	gtai:lv_circuit_assembly_matrix_speed_core_extend	Extended LV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展LV材料速度核心	gtai:lv_material_matrix_speed_core_extend	Extended LV Material Matrix Speed Core
+应用集成矩阵扩展LV流体材料速度核心	gtai:lv_fluid_material_matrix_speed_core_extend	Extended LV Fluid Material Matrix Speed Core
+应用集成矩阵扩展MV组装速度核心	gtai:mv_assembly_matrix_speed_core_extend	Extended MV Assembly Matrix Speed Core
+应用集成矩阵扩展MV电路组装速度核心	gtai:mv_circuit_assembly_matrix_speed_core_extend	Extended MV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展MV材料速度核心	gtai:mv_material_matrix_speed_core_extend	Extended MV Material Matrix Speed Core
+应用集成矩阵扩展MV流体材料速度核心	gtai:mv_fluid_material_matrix_speed_core_extend	Extended MV Fluid Material Matrix Speed Core
+应用集成矩阵扩展HV组装速度核心	gtai:hv_assembly_matrix_speed_core_extend	Extended HV Assembly Matrix Speed Core
+应用集成矩阵扩展HV电路组装速度核心	gtai:hv_circuit_assembly_matrix_speed_core_extend	Extended HV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展HV材料速度核心	gtai:hv_material_matrix_speed_core_extend	Extended HV Material Matrix Speed Core
+应用集成矩阵扩展HV流体材料速度核心	gtai:hv_fluid_material_matrix_speed_core_extend	Extended HV Fluid Material Matrix Speed Core
+应用集成矩阵扩展EV组装速度核心	gtai:ev_assembly_matrix_speed_core_extend	Extended EV Assembly Matrix Speed Core
+应用集成矩阵扩展EV电路组装速度核心	gtai:ev_circuit_assembly_matrix_speed_core_extend	Extended EV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展EV材料速度核心	gtai:ev_material_matrix_speed_core_extend	Extended EV Material Matrix Speed Core
+应用集成矩阵扩展EV流体材料速度核心	gtai:ev_fluid_material_matrix_speed_core_extend	Extended EV Fluid Material Matrix Speed Core
+应用集成矩阵扩展IV组装速度核心	gtai:iv_assembly_matrix_speed_core_extend	Extended IV Assembly Matrix Speed Core
+应用集成矩阵扩展IV电路组装速度核心	gtai:iv_circuit_assembly_matrix_speed_core_extend	Extended IV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展IV材料速度核心	gtai:iv_material_matrix_speed_core_extend	Extended IV Material Matrix Speed Core
+应用集成矩阵扩展IV流体材料速度核心	gtai:iv_fluid_material_matrix_speed_core_extend	Extended IV Fluid Material Matrix Speed Core
+应用集成矩阵扩展LuV组装速度核心	gtai:luv_assembly_matrix_speed_core_extend	Extended LuV Assembly Matrix Speed Core
+应用集成矩阵扩展LuV电路组装速度核心	gtai:luv_circuit_assembly_matrix_speed_core_extend	Extended LuV Circuit Assembly Matrix Speed Core
+应用集成矩阵扩展LuV材料速度核心	gtai:luv_material_matrix_speed_core_extend	Extended LuV Material Matrix Speed Core
+应用集成矩阵扩展LuV流体材料速度核心	gtai:luv_fluid_material_matrix_speed_core_extend	Extended LuV Fluid Material Matrix Speed Core
+应用集成矩阵组装监控器核心	gtai:assembly_matrix_monitor_core	Assembly Matrix Monitor Core
+应用集成矩阵电路组装监控器核心	gtai:circuit_assembly_matrix_monitor_core	Circuit Assembly Matrix Monitor Core
+应用集成矩阵材料监控器核心	gtai:material_matrix_monitor_core	Material Matrix Monitor Core
+应用集成矩阵流体材料监控器核心	gtai:fluid_material_matrix_monitor_core	Fluid Material Matrix Monitor Core
+应用集成矩阵扩展组装监控器核心	gtai:assembly_matrix_monitor_core_extend	Extended Assembly Matrix Monitor Core
+应用集成矩阵扩展电路组装监控器核心	gtai:circuit_assembly_matrix_monitor_core_extend	Extended Circuit Assembly Matrix Monitor Core
+应用集成矩阵扩展材料监控器核心	gtai:material_matrix_monitor_core_extend	Extended Material Matrix Monitor Core
+应用集成矩阵扩展流体材料监控器核心	gtai:fluid_material_matrix_monitor_core_extend	Extended Fluid Material Matrix Monitor Core
+应用集成矩阵LV变压器	gtai:lv_matrix_transformer	LV Matrix Transformer
+应用集成矩阵MV变压器	gtai:mv_matrix_transformer	MV Matrix Transformer
+应用集成矩阵HV变压器	gtai:hv_matrix_transformer	HV Matrix Transformer
+应用集成矩阵EV变压器	gtai:ev_matrix_transformer	EV Matrix Transformer
+应用集成矩阵IV变压器	gtai:iv_matrix_transformer	IV Matrix Transformer
+应用集成矩阵LuV变压器	gtai:luv_matrix_transformer	LuV Matrix Transformer
+应用集成矩阵超净间	gtai:matrix_cleanroom	Matrix Cleanroom
+应用集成矩阵过滤器机械方块	gtai:matrix_filter_casing	Matrix Filter Casing
+应用集成矩阵无菌过滤器机械方块	gtai:matrix_sterile_filter_casing	Matrix Sterile Filter Casing
+应用集成矩阵有源变压器	gtai:matrix_active_transformer	Matrix Active Transformer
+空应用集成矩阵核心	gtai:empty_matrix_core	Empty Matrix Core

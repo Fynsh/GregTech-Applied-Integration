@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/basic_assembly_matrix_frame"
+    }
+  }
+}

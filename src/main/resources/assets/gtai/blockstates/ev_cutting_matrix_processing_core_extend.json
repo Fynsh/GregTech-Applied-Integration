@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "gtai:block/ev_cutting_matrix_processing_core_extend"
+    }
+  }
+}
