@@ -50,7 +50,7 @@ public class GTAIMod {
         // 编码样板物品的注册（种类由 GtaiPatternKind 枚举驱动，只注册物品，不加任何获取途径）
         GtaiPatternItems.register(modEventBus);
 
-        // 199 个矩阵方块；监控器核心会创建方块实体，其余方块保持轻量结构件
+        // 199 个矩阵方块；监控器核心与矩阵框架会创建方块实体（8 + 32），其余方块保持轻量结构件
         MatrixBlocks.register(modEventBus);
         MatrixBlockEntities.register(modEventBus);
 

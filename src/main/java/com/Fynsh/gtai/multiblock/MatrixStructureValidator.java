@@ -22,10 +22,11 @@ import com.Fynsh.gtai.block.MatrixShellLevel;
  * <ul>
  *   <li>是轴对齐实心长方体，尺寸含外壳，边长在配置的 3..16 内；</li>
  *   <li>外壳只含框架、玻璃、能源仓、过滤器；顶点只能是框架；棱只能是框架或能源仓；</li>
- *   <li>恰好一个能源仓；</li>
+ *   <li>恰好一个能源仓，且电压等级至少为 HV；</li>
  *   <li>框架同等级同类型，玻璃若存在则与框架同等级；</li>
  *   <li>内部无空气/其它方块，恰好一个监控器，最多一个超净间；</li>
- *   <li>样板核心、速度核心与外壳同类型；核心若带等级则还必须同等级；处理核心按映射匹配外壳类型。</li>
+ *   <li>样板核心、速度核心、监控器核心与外壳同类型；核心若带等级则还必须同等级；
+ *       处理核心按映射匹配外壳类型。</li>
  * </ul>
  */
 public final class MatrixStructureValidator {
@@ -54,7 +55,7 @@ public final class MatrixStructureValidator {
             return null;
         }
 
-        Tracker tracker = new Tracker(definition, bounds);
+        Tracker tracker = new Tracker(definition, bounds, level);
 
         for (int x = bounds.min().getX(); x <= bounds.max().getX(); x++) {
             for (int y = bounds.min().getY(); y <= bounds.max().getY(); y++) {
@@ -99,6 +100,7 @@ public final class MatrixStructureValidator {
 
         private final MatrixMultiblockDefinition definition;
         private final MatrixStructureBounds bounds;
+        private final Level level;
         private MatrixFamily frameFamily;
         private MatrixShellLevel frameLevel;
         private MatrixShellLevel glassLevel;
@@ -108,9 +110,10 @@ public final class MatrixStructureValidator {
         private int monitors;
         private int cleanrooms;
 
-        private Tracker(MatrixMultiblockDefinition definition, MatrixStructureBounds bounds) {
+        private Tracker(MatrixMultiblockDefinition definition, MatrixStructureBounds bounds, Level level) {
             this.definition = definition;
             this.bounds = bounds;
+            this.level = level;
         }
 
         private boolean shellVertex(MatrixBlockKind kind, boolean energyHatch) {
@@ -153,6 +156,11 @@ public final class MatrixStructureValidator {
                 case SPEED_CORE -> matchesShell(kind);
                 case PROCESSING_CORE -> kind.process() != null && definition.acceptsProcess(kind.process());
                 case MONITOR -> {
+                    // 与样板核心/速度核心一致：监控器核心的种类必须与外壳相同，
+                    // 否则“材料监控器 + 组装外壳”也会被判定成型。
+                    if (!matchesShell(kind)) {
+                        yield false;
+                    }
                     monitors++;
                     // 结构只允许一个监控器；这里记录位置供成型信息写入使用
                     monitorPos = pos.immutable();
@@ -212,6 +220,11 @@ public final class MatrixStructureValidator {
         @Nullable
         private MatrixStructureMatch finish() {
             if (energyHatches.size() != 1 || monitors != 1 || monitorPos == null || cleanrooms > 1) {
+                return null;
+            }
+            // 硬性最低电压门槛：LV/MV 能源仓不允许矩阵成型
+            int hatchTier = MatrixEnergyHatch.voltageTier(level.getBlockState(energyHatches.get(0)));
+            if (hatchTier < MatrixVoltageTier.HV) {
                 return null;
             }
             if (frameFamily == null || frameLevel == null || frameState == null) {

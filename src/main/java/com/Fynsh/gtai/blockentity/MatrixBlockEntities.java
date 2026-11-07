@@ -27,7 +27,7 @@ public final class MatrixBlockEntities {
                             .of(MatrixMonitorBlockEntity::new, MatrixBlocks.monitorBlocks())
                             .build(null));
 
-    /** 40 种矩阵框架（含超净框架变体）共享一个方块实体类型。 */
+    /** 32 种矩阵框架（16 普通 + 16 超净框架）共享一个方块实体类型。 */
     public static final RegistryObject<BlockEntityType<MatrixFrameBlockEntity>> MATRIX_FRAME = BLOCK_ENTITIES
             .register("matrix_frame",
                     () -> BlockEntityType.Builder

@@ -17,7 +17,7 @@ import com.Fynsh.gtai.GTAIMod;
  *
  * <p>这里通过注册名识别，避免在成型扫描时触碰 GT 的机器方块实体/配方 API。GT 7.5.3
  * 的能源输入仓注册名为 {@code gtceu:<tier>_energy_input_hatch}、{@code _4a}、
- * {@code _16a}。</p>
+ * {@code _16a}。成型的最低电压门槛为 HV，见 {@link MatrixVoltageTier}。</p>
  */
 public final class MatrixEnergyHatch {
 
@@ -60,5 +60,10 @@ public final class MatrixEnergyHatch {
             return null;
         }
         return path.substring(0, suffix);
+    }
+
+    /** 能源仓的整数电压等级；未知或不是能源仓时返回 -1。 */
+    public static int voltageTier(BlockState state) {
+        return MatrixVoltageTier.byId(voltageId(state));
     }
 }

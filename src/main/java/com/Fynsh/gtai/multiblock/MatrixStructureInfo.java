@@ -43,7 +43,8 @@ import com.Fynsh.gtai.util.IdEnum;
  * gtai_multiblock: {
  *   version: 1,
  *   shell_type: "assembly",                 // MatrixFamily id
- *   shell_level: "basic",                   // MatrixShellLevel id
+ *   shell_level: "basic",                   // 结构自身外壳等级
+ *   matrix_level: "basic",                  // 写入监控器的有效矩阵等级
  *   energy_voltage: "lv",                   // 能源仓电压等级；无法识别时省略
  *   monitor_extended: 0b,                   // 矩阵监控器是否扩展
  *   pattern_provider_count: 3,              // 样板供应器等价数量
@@ -57,11 +58,15 @@ import com.Fynsh.gtai.util.IdEnum;
  * </pre>
  *
  * <p>信息收集规则：空核心不写入；样板供应器/速度核心/处理核心按扩展等价配置加权并合并；
- * 变压器只记录类型；过滤器仅在“存在超净间且未混用”时写入有效类型与数量。</p>
+ * 变压器只记录类型；过滤器仅在“存在超净间且未混用”时写入有效类型与数量。
+ * 写入监控器时，电压高于有效矩阵等级的速度核心/处理核心会被过滤掉。</p>
  */
 public record MatrixStructureInfo(
         MatrixFamily shellType,
+        /** 结构外壳自身等级。 */
         MatrixShellLevel shellLevel,
+        /** 写入监控器的有效矩阵等级：min(能源仓反映射等级, 结构等级)。 */
+        MatrixShellLevel matrixLevel,
         @Nullable String energyVoltage,
         boolean monitorExtended,
         int patternProviderCount,
@@ -79,6 +84,7 @@ public record MatrixStructureInfo(
     private static final String TAG_VERSION = "version";
     private static final String TAG_SHELL_TYPE = "shell_type";
     private static final String TAG_SHELL_LEVEL = "shell_level";
+    private static final String TAG_MATRIX_LEVEL = "matrix_level";
     private static final String TAG_ENERGY_VOLTAGE = "energy_voltage";
     private static final String TAG_MONITOR_EXTENDED = "monitor_extended";
     private static final String TAG_PATTERN_PROVIDER_COUNT = "pattern_provider_count";
@@ -107,6 +113,7 @@ public record MatrixStructureInfo(
     public MatrixStructureInfo {
         Objects.requireNonNull(shellType, "shellType");
         Objects.requireNonNull(shellLevel, "shellLevel");
+        Objects.requireNonNull(matrixLevel, "matrixLevel");
         if (energyVoltage != null && energyVoltage.isBlank()) {
             energyVoltage = null;
         }
@@ -130,7 +137,7 @@ public record MatrixStructureInfo(
      *
      * <p>该方法在成型判定成功之后调用；它不修改方块、不修改结构状态。
      * 结构信息来自 {@link MatrixStructureMatch}（外壳类型/等级、能源仓位置），
-     * 内容方块与过滤器从世界里逐格扫描得到。</p>
+     * 内容方块与过滤器从世界里逐格扫描得到。有效矩阵等级之外的核心不会写入结果。</p>
      *
      * @return 信息快照；若框架状态异常导致无法确定外壳等级，返回 {@code null}
      */
@@ -152,6 +159,15 @@ public record MatrixStructureInfo(
             BlockState hatchState = level.getBlockState(match.energyHatches().get(0));
             energyVoltage = MatrixEnergyHatch.voltageId(hatchState);
         }
+
+        int structureTier = MatrixVoltageTier.of(shellLevel);
+        int hatchTier = MatrixVoltageTier.byId(energyVoltage);
+        MatrixShellLevel matrixLevel = MatrixVoltageTier.shellLevel(Math.min(structureTier, hatchTier));
+        if (matrixLevel == null) {
+            // 成型验证器已经拒绝低于 HV 的能源仓；这里再做一次防御
+            return null;
+        }
+        int matrixTier = MatrixVoltageTier.of(matrixLevel);
 
         int patternProviders = 0;
         EnumMap<MatrixVoltage, Integer> speedCounts = new EnumMap<>(MatrixVoltage.class);
@@ -190,14 +206,16 @@ public record MatrixStructureInfo(
                         case PATTERN_CORE -> patternProviders += weight(kind.extended(),
                                 GtaiConfig.patternProviderExtendedEquivalent());
                         case SPEED_CORE -> {
-                            if (kind.voltage() != null) {
+                            if (kind.voltage() != null
+                                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
                                 speedCounts.merge(kind.voltage(),
                                         weight(kind.extended(), GtaiConfig.speedCoreExtendedEquivalent()),
                                         Integer::sum);
                             }
                         }
                         case PROCESSING_CORE -> {
-                            if (kind.process() != null && kind.voltage() != null) {
+                            if (kind.process() != null && kind.voltage() != null
+                                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
                                 processingCounts.merge(new ProcessingKey(kind.process(), kind.voltage()),
                                         weight(kind.extended(), GtaiConfig.processingCoreExtendedEquivalent()),
                                         Integer::sum);
@@ -245,8 +263,9 @@ public record MatrixStructureInfo(
             // 混用或没有过滤器时保持 NONE / 0
         }
 
-        return new MatrixStructureInfo(shellType, shellLevel, energyVoltage, monitorExtended, patternProviders,
-                speedCores, processingCores, new ArrayList<>(transformers), cleanroom, filterType, filterCount);
+        return new MatrixStructureInfo(shellType, shellLevel, matrixLevel, energyVoltage, monitorExtended,
+                patternProviders, speedCores, processingCores, new ArrayList<>(transformers), cleanroom, filterType,
+                filterCount);
     }
 
     /** 序列化为 BlockEntity NBT 中的 {@value #TAG_ROOT} 子标签。 */
@@ -255,6 +274,7 @@ public record MatrixStructureInfo(
         tag.putInt(TAG_VERSION, VERSION);
         tag.putString(TAG_SHELL_TYPE, shellType.id());
         tag.putString(TAG_SHELL_LEVEL, shellLevel.id());
+        tag.putString(TAG_MATRIX_LEVEL, matrixLevel.id());
         if (energyVoltage != null) {
             tag.putString(TAG_ENERGY_VOLTAGE, energyVoltage);
         }
@@ -305,6 +325,11 @@ public record MatrixStructureInfo(
         if (shellType == null || shellLevel == null) {
             return null;
         }
+        MatrixShellLevel matrixLevel = MatrixShellLevel.byIdOrNull(tag.getString(TAG_MATRIX_LEVEL));
+        if (matrixLevel == null) {
+            // 兼容旧存档：没有 matrix_level 时退回结构等级
+            matrixLevel = shellLevel;
+        }
 
         String energyVoltage = tag.contains(TAG_ENERGY_VOLTAGE, Tag.TAG_STRING)
                 ? tag.getString(TAG_ENERGY_VOLTAGE)
@@ -353,8 +378,9 @@ public record MatrixStructureInfo(
         }
         int filterCount = Math.max(0, tag.getInt(TAG_FILTER_COUNT));
 
-        return new MatrixStructureInfo(shellType, shellLevel, energyVoltage, monitorExtended, patternProviderCount,
-                speedCores, processingCores, transformers, tag.getBoolean(TAG_CLEANROOM), filterType, filterCount);
+        return new MatrixStructureInfo(shellType, shellLevel, matrixLevel, energyVoltage, monitorExtended,
+                patternProviderCount, speedCores, processingCores, transformers, tag.getBoolean(TAG_CLEANROOM),
+                filterType, filterCount);
     }
 
     private static int weight(boolean extended, int extendedEquivalent) {

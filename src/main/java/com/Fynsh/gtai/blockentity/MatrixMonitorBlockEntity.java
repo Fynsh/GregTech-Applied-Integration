@@ -41,6 +41,8 @@ import appeng.blockentity.AEBaseBlockEntity;
 
 import com.Fynsh.gtai.block.MatrixFrameBlock;
 import com.Fynsh.gtai.config.GtaiConfig;
+import com.Fynsh.gtai.multiblock.MatrixEnergyHatch;
+import com.Fynsh.gtai.multiblock.MatrixFormationExplosion;
 import com.Fynsh.gtai.multiblock.MatrixMultiblockDefinition;
 import com.Fynsh.gtai.multiblock.MatrixMultiblocks;
 import com.Fynsh.gtai.multiblock.MatrixStructureBounds;
@@ -68,6 +70,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     private static final String TAG_FORMED = "gtai_formed";
     private static final String TAG_FRAME = "gtai_frame";
     private static final String TAG_HATCHES = "gtai_hatches";
+    private static final String TAG_OVERVOLTAGE_HATCH = "gtai_overvoltage_hatch";
 
     /** 单个框架端口的最大承载频道数（DENSE_CAPACITY 对应 32）。 */
     private static final int FRAME_PORT_CHANNEL_CAPACITY = 32;
@@ -111,6 +114,10 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
 
     /** 延迟清理时间点；-1 表示没有待清理数据。 */
     private long dataClearAt = -1L;
+
+    /** 成型时电压过高但电量为 0 的能源仓；接电后立即爆炸。 */
+    @Nullable
+    private BlockPos pendingOvervoltageHatch;
 
     /** 本次数据是否从存档读取，用于进入世界后的首次存储值/实际值校验。 */
     private boolean infoLoadedFromDisk;
@@ -163,6 +170,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
      */
     private boolean suppressFormationSound;
 
+    /** 读档后的首次有效成型不触发爆炸/音效；等结构判定稳定后清除。 */
+    private boolean suppressFormationEffects;
+
     public MatrixMonitorBlockEntity(BlockPos pos, BlockState state) {
         super(MatrixBlockEntities.MATRIX_MONITOR.get(), pos, state);
     }
@@ -178,6 +188,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             initialValidationPending = true;
             initialValidationRetries = 0;
             initialValidationRetryScheduled = false;
+        }
+        if (formed || structureInfo != null) {
+            suppressFormationEffects = true;
         }
         refreshFormed();
 
@@ -211,6 +224,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             initialValidationRetries = 0;
             initialValidationRetryScheduled = false;
             suppressFormationSound = true;
+            suppressFormationEffects = formed || structureInfo != null;
             try {
                 refreshFormed();
             } finally {
@@ -281,6 +295,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
 
         boolean wasFormed = formed;
         boolean forceRevalidate = revalidateFrames;
+        boolean suppressEffects = suppressFormationEffects;
         MatrixStructureMatch next = MatrixMultiblocks.findMatchAt(serverLevel, worldPosition).orElse(null);
 
         if (next == null && initialValidationPending) {
@@ -336,6 +351,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             // 进入世界/结构变化后，用实际扫描值校正存档里的旧快照；
             // 若实际扫描失败则保留旧数据，绝不因一次失败清空。
             updateStructureInfo(serverLevel, next, nextInfo);
+            updateOvervoltagePending(serverLevel, next, nextInfo);
 
             MatrixStructureInfo effectiveInfo = nextInfo != null ? nextInfo : structureInfo;
             long required = 1L + (effectiveInfo == null ? 0L : effectiveInfo.patternProviderCount());
@@ -350,20 +366,37 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
                 // syncFrames 可能在本 tick 内才建立端口连接；只在结构状态变化时再 repath
                 repathChannelNetworks();
             }
+
+            if (!wasFormed && !suppressFormationSound && !suppressEffects && nextInfo != null) {
+                List<BlockPos> explosionTargets = MatrixFormationExplosion.findTargets(serverLevel, next, nextInfo);
+                if (!explosionTargets.isEmpty()) {
+                    scheduleTask(1, () -> {
+                        if (!isRemoved() && level instanceof ServerLevel currentLevel) {
+                            MatrixFormationExplosion.destroy(currentLevel, explosionTargets);
+                            refreshFormed();
+                        }
+                    });
+                }
+            }
         } else {
             // 结构失效只断开 AE 和端口，数据保留到延迟清理时间
             recoveryScheduled = false;
             reconnectAttempted = false;
             recoveryToken++;
+            setPendingOvervoltageHatch(null);
             clearChannels();
             clearFrames();
             scheduleDataClear();
         }
 
+        if (next != null || !initialValidationPending) {
+            suppressFormationEffects = false;
+        }
+
         if (changed) {
             if (formed) {
                 // 只在“从未成型到成型”时播放；结构类型切换（已经成型）不重复播放
-                if (!wasFormed && !suppressFormationSound) {
+                if (!wasFormed && !suppressFormationSound && !suppressEffects) {
                     serverLevel.playSound(null, worldPosition, SoundEvents.EXPERIENCE_ORB_PICKUP,
                             SoundSource.PLAYERS, 1.0F, 1.0F);
                 }
@@ -431,7 +464,60 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         // 后续若增加样板槽/材料缓存等持久数据，也必须在这里一起清理
         dataClearAt = -1L;
         infoLoadedFromDisk = false;
+        setPendingOvervoltageHatch(null);
         onStructureDataCleared();
+    }
+
+    private void updateOvervoltagePending(ServerLevel serverLevel, MatrixStructureMatch match,
+            @Nullable MatrixStructureInfo info) {
+        if (info == null) {
+            return;
+        }
+        if (MatrixFormationExplosion.isOvervoltage(match, info)) {
+            BlockPos hatch = match.energyHatches().get(0);
+            if (MatrixFormationExplosion.storedEnergy(serverLevel, hatch) <= 0L) {
+                // 成型时无电：先打标记，后续接电由 checkPendingOvervoltage 处理
+                setPendingOvervoltageHatch(hatch);
+            }
+            // 已有电量时不在这里清除旧标记：重进世界后可能由 checkPendingOvervoltage 引爆
+        } else {
+            setPendingOvervoltageHatch(null);
+        }
+    }
+
+    private void setPendingOvervoltageHatch(@Nullable BlockPos pos) {
+        BlockPos next = pos == null ? null : pos.immutable();
+        if (Objects.equals(pendingOvervoltageHatch, next)) {
+            return;
+        }
+        pendingOvervoltageHatch = next;
+        setChanged();
+        markForUpdate();
+    }
+
+    /** 成型时因电量为 0 未爆炸的过压能源仓，一旦接电就立即引爆。 */
+    private void checkPendingOvervoltage(ServerLevel serverLevel) {
+        if (pendingOvervoltageHatch == null || !formed || match == null) {
+            return;
+        }
+        BlockPos hatchPos = pendingOvervoltageHatch;
+        if (!serverLevel.isLoaded(hatchPos)) {
+            return;
+        }
+        if (!MatrixEnergyHatch.isEnergyHatch(serverLevel.getBlockState(hatchPos))) {
+            setPendingOvervoltageHatch(null);
+            return;
+        }
+        if (!match.energyHatches().contains(hatchPos)) {
+            setPendingOvervoltageHatch(null);
+            return;
+        }
+        if (MatrixFormationExplosion.storedEnergy(serverLevel, hatchPos) <= 0L) {
+            return;
+        }
+        setPendingOvervoltageHatch(null);
+        MatrixFormationExplosion.destroy(serverLevel, List.of(hatchPos));
+        refreshFormed();
     }
 
     private void scheduleTask(int delay, Runnable action) {
@@ -446,6 +532,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             return;
         }
         scheduledTasks.runDue(serverLevel.getGameTime());
+        checkPendingOvervoltage(serverLevel);
         if (!initialRefreshDone) {
             initialRefreshDone = true;
             // 有些加载路径不会调用 onReady；保证进入世界后下一 tick 主动成型一次
@@ -614,10 +701,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         reconnectAttempted = true;
         int required = requiredChannels;
         Set<MatrixFrameBlockEntity> frames = new HashSet<>(framePorts.values());
-        for (MatrixFrameBlockEntity frame : frames) {
-            frame.refreshNeighborCables();
-        }
-        // 频道节点本身也可能落在旧的断开 grid 中；连同端口一起重建
+        // 频道节点本身也可能落在旧的断开 grid 中；连同端口一起重建。
+        // recreatePorts 会重新创建 in-world 端口，AE 随之重新扫描并建连；
+        // 与旧实现“替换同种线缆 part”效果等价，但不会破坏线缆总线中的其它 part。
         clearChannels();
         updateChannels(required);
         for (MatrixFrameBlockEntity frame : frames) {
@@ -956,6 +1042,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
 
     /** 方块实体移除/区块卸载时的统一收尾：断开 AE 连接并丢弃未执行的延迟任务。 */
     private void resetTransientState() {
+        suppressFormationEffects = false;
         clearChannels();
         clearFrames();
         scheduledTasks.clear();
@@ -1002,6 +1089,11 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             hatches.add(entry);
         }
         tag.put(TAG_HATCHES, hatches);
+        if (pendingOvervoltageHatch != null) {
+            tag.putLong(TAG_OVERVOLTAGE_HATCH, pendingOvervoltageHatch.asLong());
+        } else {
+            tag.remove(TAG_OVERVOLTAGE_HATCH);
+        }
 
         if (structureInfo != null) {
             // 结构失效期间也保留数据，避免退出/重进时吞掉材料或缓存
@@ -1037,6 +1129,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             structureInfo = MatrixStructureInfo.load(data.getCompound(MatrixStructureInfo.TAG_ROOT));
             infoLoadedFromDisk = structureInfo != null;
         }
+        pendingOvervoltageHatch = data.contains(TAG_OVERVOLTAGE_HATCH, Tag.TAG_LONG)
+                ? BlockPos.of(data.getLong(TAG_OVERVOLTAGE_HATCH))
+                : null;
     }
 
     /**

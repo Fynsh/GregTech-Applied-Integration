@@ -195,6 +195,11 @@ dependencies {
     compileOnly fg.deobf("maven.modrinth:gregtechceu-modern:${gtceu_version}")
     runtimeOnly fg.deobf("maven.modrinth:gregtechceu-modern:${gtceu_version}")
 
+    // --- Jade (development runtime only) --------------------------------------
+    // Runtime-only so it shows up in runClient/runServer for manual inspection but is
+    // never compiled against or embedded in this mod's jar.
+    runtimeOnly fg.deobf("maven.modrinth:jade:${jade_version}")
+
     // --- Just Enough Items ----------------------------------------------------
     // The AE2 "encode pattern" JEI integration is extended for GT recipe types, so JEI is a
     // compile dependency for the client-side hook and a runtime dependency for dev runs.
