@@ -70,49 +70,44 @@ public final class MatrixFormationExplosion {
             }
         }
 
-        // 规则 5：低电压核心缺少有源变压器或连续升压链
+        // 规则 5：低电压核心缺少有源变压器或连续升压链。
+        // 速度/处理核心的坐标已经由验证阶段写入布局快照，这里不再遍历整个结构。
         if (!activeTransformer) {
-            MatrixStructureBounds bounds = match.bounds();
-            for (int x = bounds.min().getX(); x <= bounds.max().getX(); x++) {
-                for (int y = bounds.min().getY(); y <= bounds.max().getY(); y++) {
-                    for (int z = bounds.min().getZ(); z <= bounds.max().getZ(); z++) {
-                        BlockPos pos = new BlockPos(x, y, z);
-                        if (bounds.boundaryCount(pos) != 0) {
-                            continue;
-                        }
-                        BlockState state = level.getBlockState(pos);
-                        if (!(state.getBlock() instanceof MatrixBlock block)) {
-                            continue;
-                        }
-                        MatrixBlockKind kind = block.kind();
-                        if (kind.role() != MatrixBlockRole.SPEED_CORE
-                                && kind.role() != MatrixBlockRole.PROCESSING_CORE) {
-                            continue;
-                        }
-                        if (kind.voltage() == null) {
-                            continue;
-                        }
-                        int coreTier = MatrixVoltageTier.of(kind.voltage());
-                        // 等于矩阵等级不检查；高于矩阵等级只从监控器数据中忽略
-                        if (coreTier >= matrixTier) {
-                            continue;
-                        }
-                        boolean completeChain = true;
-                        for (int tier = coreTier; tier < matrixTier; tier++) {
-                            if (!transformerTiers.contains(tier)) {
-                                completeChain = false;
-                                break;
-                            }
-                        }
-                        if (!completeChain) {
-                            targets.add(pos.immutable());
-                        }
-                    }
-                }
-            }
+            checkCoreChain(level, match, MatrixBlockRole.SPEED_CORE, matrixTier, transformerTiers, targets);
+            checkCoreChain(level, match, MatrixBlockRole.PROCESSING_CORE, matrixTier, transformerTiers, targets);
         }
 
         return targets;
+    }
+
+    /** 检查一种核心角色的升压链；不满足条件的核心加入 {@code targets}。 */
+    private static void checkCoreChain(ServerLevel level, MatrixStructureMatch match, MatrixBlockRole role,
+            int matrixTier, Set<Integer> transformerTiers, List<BlockPos> targets) {
+        for (BlockPos pos : match.layout().positions(role)) {
+            BlockState state = level.getBlockState(pos);
+            if (!(state.getBlock() instanceof MatrixBlock block)) {
+                continue;
+            }
+            MatrixBlockKind kind = block.kind();
+            if (kind.role() != role || kind.voltage() == null) {
+                continue;
+            }
+            int coreTier = MatrixVoltageTier.of(kind.voltage());
+            // 等于矩阵等级不检查；高于矩阵等级只从监控器数据中忽略
+            if (coreTier >= matrixTier) {
+                continue;
+            }
+            boolean completeChain = true;
+            for (int tier = coreTier; tier < matrixTier; tier++) {
+                if (!transformerTiers.contains(tier)) {
+                    completeChain = false;
+                    break;
+                }
+            }
+            if (!completeChain) {
+                targets.add(pos.immutable());
+            }
+        }
     }
 
     /** 能源仓电压是否高于矩阵最高可用电压。 */

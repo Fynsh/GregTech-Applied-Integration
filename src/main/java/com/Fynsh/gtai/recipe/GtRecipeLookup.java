@@ -33,7 +33,7 @@ public final class GtRecipeLookup {
 
     private static final Map<ResourceLocation, GTRecipeType> TYPE_CACHE = new ConcurrentHashMap<>();
 
-    private static final Map<RecipeManager, Map<ResourceLocation, Boolean>> RESULT_CACHE = Collections
+    private static final Map<RecipeManager, Map<RecipeKey, Boolean>> RESULT_CACHE = Collections
             .synchronizedMap(new WeakHashMap<>());
 
     private GtRecipeLookup() {
@@ -56,36 +56,46 @@ public final class GtRecipeLookup {
     /** 给定配方类型与配方 id，判断该配方当前是否存在。 */
     public static boolean exists(Level level, ResourceLocation typeId, ResourceLocation recipeId) {
         RecipeManager manager = level.getRecipeManager();
-        Map<ResourceLocation, Boolean> cache;
+        Map<RecipeKey, Boolean> cache;
         synchronized (RESULT_CACHE) {
             cache = RESULT_CACHE.computeIfAbsent(manager, ignored -> new ConcurrentHashMap<>());
         }
-        return cache.computeIfAbsent(recipeId, id -> lookup(manager, typeId, id));
+        RecipeKey key = new RecipeKey(typeId, recipeId);
+        return cache.computeIfAbsent(key, ignored -> lookup(manager, key));
     }
 
-    private static boolean lookup(RecipeManager manager, ResourceLocation typeId, ResourceLocation recipeId) {
-        GTRecipeType type = findType(typeId);
+    private static boolean lookup(RecipeManager manager, RecipeKey key) {
+        GTRecipeType type = findType(key.type());
         if (type == null) {
             return false;
         }
 
         // 快路径：若该配方也被原生 byKey 索引到，直接命中
-        var byKey = manager.byKey(recipeId);
+        var byKey = manager.byKey(key.id());
         if (byKey.isPresent() && byKey.get() instanceof GTRecipe recipe && recipe.getType() == type) {
             return true;
         }
 
         java.util.List<GTRecipe> recipes = manager.getAllRecipesFor(type);
         if (recipes.isEmpty()) {
-            // 当前端的配方表里完全没有该类型的配方（例如客户端还没同步到 GT 的配方数据），
-            // 此时无法判断“配方被删除”，按有效处理，避免把正常样板误判成无效样板。
+            // 完全拿不到该类配方时无法区分“配方被删除”和“当前端尚未同步/该类型使用
+            // 动态配方逻辑”，保持宽松，避免把正常样板误判成无效样板。
             return true;
         }
         for (GTRecipe recipe : recipes) {
-            if (recipeId.equals(recipe.getId())) {
+            if (key.id().equals(recipe.getId())) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 配方存在性缓存的键。
+     *
+     * <p>配方 id 通常在同一个 {@link RecipeManager} 内唯一，但不同配方类型下出现同名 id
+     * 并非不可能；把类型一起放进键里，避免两次查询互相污染缓存。</p>
+     */
+    private record RecipeKey(ResourceLocation type, ResourceLocation id) {
     }
 }

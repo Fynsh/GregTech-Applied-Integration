@@ -1,13 +1,17 @@
 package com.Fynsh.gtai.blockentity;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -15,13 +19,20 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -39,31 +50,41 @@ import appeng.api.networking.IGridNodeListener;
 import appeng.api.networking.IManagedGridNode;
 import appeng.blockentity.AEBaseBlockEntity;
 
+import com.Fynsh.gtai.block.MatrixBlockRole;
+import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.block.MatrixFrameBlock;
 import com.Fynsh.gtai.config.GtaiConfig;
+import com.Fynsh.gtai.menu.MatrixMenu;
 import com.Fynsh.gtai.multiblock.MatrixEnergyHatch;
 import com.Fynsh.gtai.multiblock.MatrixFormationExplosion;
 import com.Fynsh.gtai.multiblock.MatrixMultiblockDefinition;
 import com.Fynsh.gtai.multiblock.MatrixMultiblocks;
-import com.Fynsh.gtai.multiblock.MatrixStructureBounds;
 import com.Fynsh.gtai.multiblock.MatrixStructureInfo;
+import com.Fynsh.gtai.multiblock.MatrixStructureLayout;
 import com.Fynsh.gtai.multiblock.MatrixStructureMatch;
+import com.Fynsh.gtai.pattern.MatrixPatternRules;
 import com.Fynsh.gtai.util.TickTaskQueue;
 
 /**
  * 矩阵监控器核心的方块实体。
  *
- * <p>本阶段保存成型状态、渲染信息与多方块详细信息，并负责把结构接入 AE 网络
- * （监控器侧频道节点 + 框架侧端口节点）；不实现 GUI、能量或配方交互，仅保留一个
- * 服务端 tick 用于结构失效后的延迟数据清理。结构从"未成型"变为"成型"时播放一次
- * 玩家获得经验球的声音；成型结果中的框架外观与能源仓位置会同步到客户端，供 BER 绘制覆盖层。</p>
+ * <p>保存成型状态、渲染信息、多方块详细信息与样板库存，并负责把结构接入 AE 网络
+ * （监控器侧频道节点 + 框架侧端口节点）。本阶段提供样板 GUI 菜单与样板存储；
+ * 配方执行、能量消耗仍在后续阶段。结构从"未成型"变为"成型"时播放一次玩家获得
+ * 经验球的声音；成型结果中的框架外观与能源仓位置会同步到客户端，供 BER 绘制覆盖层。</p>
+ *
+ * <p><b>频道策略：</b>需求 = {@code channels.base + perPatternProviderCore × 样板供应器等价数量}；
+ * 频道节点按端口容量<b>分块</b>连接，多根线缆分别承担一部分频道。矩阵不会因容量不足
+ * 拒绝 AE 连接：AE 实际分配到多少频道，就按多少频道计算可用的样板供应器核心
+ * （{@code max(0, linkedChannels - base) / perPatternProviderCore}）。超出部分的核心
+ * 视为被过载，对应样板槽暂时不可用，矩阵本身仍保持连接。</p>
  *
  * <p><b>状态分层：</b>AE2 侧只使用 {@link #isFormed()} 这个“是否成型”布尔状态；
  * 外壳类型/等级、能源仓电压、内容方块与过滤器等详细信息保存在
  * {@link MatrixStructureInfo} 中，并以 {@value MatrixStructureInfo#TAG_ROOT} 子标签写入
  * 本方块实体的 NBT。</p>
  */
-public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
+public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuProvider {
 
     private static final Logger LOGGER = LogUtils.getLogger();
 
@@ -71,6 +92,12 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     private static final String TAG_FRAME = "gtai_frame";
     private static final String TAG_HATCHES = "gtai_hatches";
     private static final String TAG_OVERVOLTAGE_HATCH = "gtai_overvoltage_hatch";
+    private static final String TAG_PATTERNS = "gtai_patterns";
+    private static final String TAG_PATTERN_SLOT = "slot";
+    private static final String TAG_PATTERN_ITEM = "item";
+
+    /** 单个监控器最多持久化的样板条目数，防止损坏/恶意 NBT 造成过大内存占用。 */
+    private static final int MAX_SAVED_PATTERNS = 65536;
 
     /** 单个框架端口的最大承载频道数（DENSE_CAPACITY 对应 32）。 */
     private static final int FRAME_PORT_CHANNEL_CAPACITY = 32;
@@ -152,11 +179,23 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     /** 当前结构应占用的频道数。 */
     private int requiredChannels;
 
-    /** 频道容量不足或频道数超过上限时为 true；仅作为状态标记，当前仍交给 AE 路径分配。 */
-    private boolean channelOverloaded;
+    /**
+     * AE 实际分配到的频道数（= 拿到频道的频道节点数量）。
+     *
+     * <p>矩阵不再因容量不足拒绝接入；链接成功多少频道就按多少频道计算可用的样板供应器：
+     * 可用核心数 = max(0, linkedChannels - channels.base) / channels.perPatternProviderCore。
+     * 超出部分的核心视为“被过载”，其样板槽暂不可用。</p>
+     */
+    private int linkedChannels;
 
-    /** AE 实际分配后仍有频道节点没有拿到频道（线缆/控制器容量不足）。 */
-    private boolean networkOverloaded;
+    /** 频道节点与端口之间的连接分配已排队，避免成型时每块框架各重建一次。 */
+    private boolean channelAssignmentScheduled;
+
+    /** 实际链接数刷新已排队，把同一 tick 内大量 CHANNEL 状态回调合并成一次统计。 */
+    private boolean linkedRefreshQueued;
+
+    /** 延迟刷新已排队（20/60/120 tick 的稳定期刷新合并为一次；周期兜底仍在 serverTick）。 */
+    private boolean linkedRefreshScheduled;
 
     /** 区块/方块实体刚加载时，强制让相邻线缆重新查询一次框架端口。 */
     private boolean revalidateFrames;
@@ -173,6 +212,14 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     /** 读档后的首次有效成型不触发爆炸/音效；等结构判定稳定后清除。 */
     private boolean suppressFormationEffects;
 
+    /**
+     * 监控器中的样板库存。
+     *
+     * <p>用“绝对槽位 -> 样板”的稀疏映射保存：容量由结构中的等价样板供应器数量动态计算，
+     * 容量缩小时已存样板不会被丢弃，只是暂时不可见/不可操作；容量恢复后重新出现。</p>
+     */
+    private final Map<Integer, ItemStack> patternStacks = new TreeMap<>();
+
     public MatrixMonitorBlockEntity(BlockPos pos, BlockState state) {
         super(MatrixBlockEntities.MATRIX_MONITOR.get(), pos, state);
     }
@@ -181,7 +228,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     public void onReady() {
         super.onReady();
         initialRefreshDone = true;
-        // 加载后线缆可能先于/后于本监控器加载，强制重新检查一次框架端口
+        // 加载后线缆可能先于/后于本监控器加载，强制重新检查一次框架端口与容量
         reconnectAttempted = false;
         revalidateFrames = true;
         if ((formed || structureInfo != null) && !initialValidationPending) {
@@ -211,7 +258,8 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
 
         // 客户端收到的是 getUpdateTag 的同步数据；服务端收到的是存档数据。
         // 两边都先恢复状态；服务端随后重新判定，判定失败会清空全部成型信息。
-        readState(data);
+        readSyncState(data);
+        readPersistentState(data);
         readRuntimeData(data);
 
         if (level == null || level.isClientSide) {
@@ -236,7 +284,8 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     @Override
     public void saveAdditional(CompoundTag tag) {
         super.saveAdditional(tag);
-        writeState(tag);
+        writeSyncState(tag);
+        writePersistentState(tag);
         writeRuntimeData(tag);
     }
 
@@ -270,7 +319,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
                         if (Math.abs(pos.getX() - changed.getX()) <= radius
                                 && Math.abs(pos.getY() - changed.getY()) <= radius
                                 && Math.abs(pos.getZ() - changed.getZ()) <= radius) {
-                            monitor.refreshFormed();
+                            monitor.refreshFormed(changed);
                         }
                     }
                 }
@@ -289,7 +338,23 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
      * 仍为 {@code true}；此时只记录一条警告，不写入详情。</p>
      */
     public boolean refreshFormed() {
+        return refreshFormed(null);
+    }
+
+    /**
+     * 重新执行成型判定。
+     *
+     * @param changedPos 触发本次刷新的方块位置；{@code null} 表示强制重扫（读档、延迟重试等）。
+     *                   已知位置时，远离当前结构边界的改动可以直接跳过：它不可能与外壳相邻，
+     *                   也就不可能改变扫描边界或内部方块。
+     */
+    public boolean refreshFormed(@Nullable BlockPos changedPos) {
         if (!(level instanceof ServerLevel serverLevel)) {
+            return formed;
+        }
+
+        if (changedPos != null && formed && match != null && !initialValidationPending
+                && !match.bounds().isWithinExpanded(changedPos, 1)) {
             return formed;
         }
 
@@ -354,14 +419,18 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             updateOvervoltagePending(serverLevel, next, nextInfo);
 
             MatrixStructureInfo effectiveInfo = nextInfo != null ? nextInfo : structureInfo;
-            long required = 1L + (effectiveInfo == null ? 0L : effectiveInfo.patternProviderCount());
-            updateChannels((int) Math.min(Integer.MAX_VALUE, required));
-            syncFrames(next.bounds());
+            int required = effectiveInfo == null ? GtaiConfig.channelBase() : effectiveInfo.requiredChannels();
+            // 不再因容量不足拒绝接入：按结构需求建好全部频道节点，由 AE 决定实际链接多少。
+            updateChannels(required);
+            syncFrames(next);
+            if (changed || forceRevalidate) {
+                scheduleLinkedChannelRefresh(20);
+            }
 
             // 成型/重载后，让整个外壳向周围发送方块更新：
             // 已存在的 AE 线缆会重新查询框架端口，避免“先放线缆后建矩阵”或重进世界后频道为 0。
             if (changed || forceRevalidate) {
-                scheduleShellNeighborUpdates(next.bounds());
+                scheduleShellNeighborUpdates(next.layout());
                 scheduleChannelRecovery();
                 // syncFrames 可能在本 tick 内才建立端口连接；只在结构状态变化时再 repath
                 repathChannelNetworks();
@@ -408,6 +477,188 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             markForUpdate();
         }
         return formed;
+    }
+
+    /**
+     * 把频道节点按端口容量分块连接到端口。
+     *
+     * <p>第一轮按每个端口的容量填充，使多根线缆的容量分别承担一部分频道，避免旧实现
+     * “所有节点连所有端口”时 AE 生成树把频道全压到一个入口。</p>
+     *
+     * <p>若容量估算不足以放下全部节点，剩余节点继续轮流挂到端口上，由 AE 自行决定
+     * 哪些节点最终拿到频道——矩阵不拒绝接入，实际链接数由
+     * {@link #refreshLinkedChannels()} 统计，超出的核心视为过载、样板槽不可用。</p>
+     */
+    private void assignChannelsToPorts() {
+        disconnectAllPorts();
+        if (!formed || channelNodes.isEmpty() || framePorts.isEmpty()) {
+            return;
+        }
+
+        List<IGridNode> ports = new ArrayList<>(framePorts.keySet());
+        ports.sort(Comparator.comparingLong(this::portOrder)
+                .thenComparingInt(port -> port.getConnectedSides().stream()
+                        .mapToInt(Direction::ordinal).min().orElse(Integer.MAX_VALUE)));
+
+        Set<IGridNode> usedNeighbors = Collections.newSetFromMap(new IdentityHashMap<>());
+        int[] capacities = new int[ports.size()];
+        for (int i = 0; i < ports.size(); i++) {
+            IGridNode neighbor = inWorldNeighbor(ports.get(i));
+            if (neighbor == null || !usedNeighbors.add(neighbor)) {
+                continue;
+            }
+            capacities[i] = Math.min(portChannelCapacity(ports.get(i)), nodeChannelCapacity(neighbor));
+        }
+
+        int next = 0;
+        // 第一轮：按容量分块，尽量让每根线缆刚好承担自己的份额。
+        for (int i = 0; i < ports.size() && next < channelNodes.size(); i++) {
+            for (int slot = 0; slot < capacities[i] && next < channelNodes.size(); slot++) {
+                connectChannel(ports.get(i), next++);
+            }
+        }
+        // 第二轮：容量估算可能偏低/线缆尚未完成入网，剩余节点也挂上去让 AE 自己裁决。
+        int cursor = 0;
+        while (next < channelNodes.size()) {
+            connectChannel(ports.get(cursor % ports.size()), next++);
+            cursor++;
+        }
+
+        repathChannelNetworks();
+        // AE 的实际分配要等路径计算完成；多次刷新覆盖控制器启动、分频等延迟。
+        scheduleLinkedChannelRefresh(20);
+        scheduleLinkedChannelRefresh(60);
+        scheduleLinkedChannelRefresh(120);
+    }
+
+    private void connectChannel(IGridNode port, int index) {
+        if (index < 0 || index >= channelNodes.size()) {
+            return;
+        }
+        IGridNode channel = channelNodes.get(index).getNode();
+        if (channel == null) {
+            return;
+        }
+        try {
+            channelConnections.add(GridHelper.createConnection(port, channel));
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to connect a matrix channel node at {} to its frame port", worldPosition, e);
+        }
+    }
+
+    /** 合并同一 tick 内的多次端口变化，只重建一次频道分配。 */
+    private void scheduleChannelAssignment() {
+        if (channelAssignmentScheduled || !(level instanceof ServerLevel)) {
+            return;
+        }
+        channelAssignmentScheduled = true;
+        scheduleTask(1, () -> {
+            channelAssignmentScheduled = false;
+            if (!isRemoved() && formed) {
+                assignChannelsToPorts();
+            }
+        });
+    }
+
+    /** 由框架在邻居变化时调用：线缆可能增删/更换，重排频道连接并刷新实际链接数。 */
+    void requestChannelRecheck() {
+        if (!formed) {
+            return;
+        }
+        scheduleChannelAssignment();
+        scheduleLinkedChannelRefresh(20);
+    }
+
+    private void scheduleLinkedChannelRefresh(int delay) {
+        if (!(level instanceof ServerLevel)) {
+            return;
+        }
+        if (delay <= 0) {
+            refreshLinkedChannels();
+            return;
+        }
+        if (linkedRefreshScheduled) {
+            return;
+        }
+        linkedRefreshScheduled = true;
+        scheduleTask(delay, () -> {
+            linkedRefreshScheduled = false;
+            refreshLinkedChannels();
+        });
+    }
+
+    /**
+     * 统计 AE 实际分配给矩阵的频道数。
+     *
+     * <p>监控器用它计算“可用的样板供应器核心”：
+     * {@code (linkedChannels - channels.base) / channels.perPatternProviderCore}。
+     * 超出实际链接数的核心不会让矩阵断开，只是对应数量的样板槽暂时不可用。</p>
+     */
+    private void refreshLinkedChannels() {
+        if (isRemoved() || !formed) {
+            return;
+        }
+        int linked = 0;
+        for (IManagedGridNode managed : channelNodes) {
+            IGridNode node = managed.getNode();
+            if (node != null && node.getUsedChannels() > 0) {
+                linked++;
+            }
+        }
+        if (linked != linkedChannels) {
+            linkedChannels = linked;
+            setChanged();
+        }
+    }
+
+    /**
+     * 一个外部 AE 节点可向矩阵提供的频道数。
+     *
+     * <p>节点已入网时直接使用 {@code getMaxChannels()}，它会自动反映密集线缆、频道模式
+     * （X2/X3/X4/无限）等规则；节点尚未入网时退回 8/32 的默认值。</p>
+     */
+    private static int nodeChannelCapacity(IGridNode node) {
+        if (node.hasFlag(GridFlags.CANNOT_CARRY)) {
+            return 0;
+        }
+        try {
+            int max = node.getMaxChannels();
+            if (max > 0) {
+                return Math.min(MAX_CHANNEL_NODES, max);
+            }
+        } catch (RuntimeException ignored) {
+            // 节点尚未入网：getMaxChannels 需要 grid，退回端口默认容量
+        }
+        return node.hasFlag(GridFlags.DENSE_CAPACITY) ? FRAME_PORT_CHANNEL_CAPACITY : 8;
+    }
+
+    /** 单个框架端口自身可承载的频道数（密集端口 32，频道模式放大时更高）。 */
+    private static int portChannelCapacity(IGridNode port) {
+        try {
+            int max = port.getMaxChannels();
+            if (max > 0) {
+                return Math.min(MAX_CHANNEL_NODES, max);
+            }
+        } catch (RuntimeException ignored) {
+            // 端口尚未入网时按密集端口默认值处理
+        }
+        return FRAME_PORT_CHANNEL_CAPACITY;
+    }
+
+    private long portOrder(IGridNode port) {
+        Object owner = port.getOwner();
+        return owner instanceof MatrixFrameBlockEntity frame ? frame.getBlockPos().asLong() : Long.MAX_VALUE;
+    }
+
+    @Nullable
+    private static IGridNode inWorldNeighbor(IGridNode port) {
+        for (IGridConnection connection : port.getInWorldConnections().values()) {
+            IGridNode other = connection.getOtherSide(port);
+            if (other != null) {
+                return other;
+            }
+        }
+        return null;
     }
 
     /**
@@ -458,10 +709,12 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
 
     /** 真正删除监控器数据；结构重新成型时会取消该清理。 */
     private void clearStoredData() {
+        // 样板属于玩家物品：清理前先掉落到监控器位置，避免数据保留期结束后凭空消失
+        dropStoredPatterns();
         if (structureInfo != null) {
             setStructureInfo(null);
         }
-        // 后续若增加样板槽/材料缓存等持久数据，也必须在这里一起清理
+        // 后续若增加材料缓存等持久数据，也必须在这里一起清理
         dataClearAt = -1L;
         infoLoadedFromDisk = false;
         setPendingOvervoltageHatch(null);
@@ -492,7 +745,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         }
         pendingOvervoltageHatch = next;
         setChanged();
-        markForUpdate();
+        // 过压标记只影响服务端逻辑，不再触发方块更新包
     }
 
     /** 成型时因电量为 0 未爆炸的过压能源仓，一旦接电就立即引爆。 */
@@ -532,6 +785,10 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             return;
         }
         scheduledTasks.runDue(serverLevel.getGameTime());
+        // 每秒兜底刷新一次实际链接数：频道被其他机器抢占、路径重算等未必每次都触发节点回调。
+        if (formed && serverLevel.getGameTime() % 20L == 0L) {
+            refreshLinkedChannels();
+        }
         checkPendingOvervoltage(serverLevel);
         if (!initialRefreshDone) {
             initialRefreshDone = true;
@@ -556,7 +813,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         }
         structureInfo = info;
         setChanged();
-        markForUpdate();
+        // 结构详情只保存在存档中，客户端渲染不依赖它；后续 GUI 应使用菜单数据同步
     }
 
     /**
@@ -565,35 +822,30 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
      * <p>频道节点是普通的、非世界内节点，每个都带 {@code REQUIRE_CHANNEL}，因此
      * AE 会把它们各算作一个独立频道。框架端口节点本身不占频道，只负责把线缆的
      * 频道转发到这些节点。结构总频道数因此严格等于节点数量。</p>
+     *
+     * <p>节点本身不在这里绑定端口；实际连接由 {@link #assignChannelsToPorts()} 按
+     * 每个端口的 8/32 容量分块建立。</p>
      */
     private void updateChannels(int required) {
-        if (required == requiredChannels
-                && (channelNodes.size() == required || required > MAX_CHANNEL_NODES)) {
-            refreshChannelOverload();
+        int requested = Math.max(0, required);
+        int count = Math.min(requested, MAX_CHANNEL_NODES);
+        if (requested == requiredChannels && channelNodes.size() == count) {
             return;
         }
 
         clearChannels();
-        requiredChannels = Math.max(0, required);
+        requiredChannels = requested;
 
-        if (!(level instanceof ServerLevel serverLevel) || requiredChannels == 0) {
+        if (!(level instanceof ServerLevel serverLevel) || count == 0) {
             return;
         }
 
-        if (requiredChannels > MAX_CHANNEL_NODES) {
-            channelOverloaded = true;
-            LOGGER.warn("Matrix at {} requires {} channels, above the supported limit {}; AE connection is disabled",
-                    worldPosition, requiredChannels, MAX_CHANNEL_NODES);
-            return;
-        }
-
-        for (int index = 0; index < requiredChannels; index++) {
+        for (int index = 0; index < count; index++) {
             createChannelNode(serverLevel, index);
         }
 
-        refreshChannelOverload();
-        // 不因一次容量估算就断开频道节点；AE 路径分配会把未拿到频道的节点标记为离线
-        connectAllPorts();
+        // 具体连到哪些端口由 assignChannelsToPorts 决定；多出来的节点保持未连接。
+        scheduleChannelAssignment();
         repathChannelNetworks();
     }
 
@@ -615,34 +867,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         }
         channelNodes.clear();
         requiredChannels = 0;
-        channelOverloaded = false;
-        networkOverloaded = false;
-    }
-
-    private void refreshChannelOverload() {
-        if (requiredChannels > MAX_CHANNEL_NODES) {
-            channelOverloaded = true;
-            return;
-        }
-        int capacity = 0;
-        for (IGridNode port : framePorts.keySet()) {
-            int portCapacity = 0;
-            for (IGridConnection connection : port.getInWorldConnections().values()) {
-                IGridNode other = connection.getOtherSide(port);
-                if (other != null) {
-                    try {
-                        portCapacity += Math.max(0, other.getMaxChannels());
-                    } catch (RuntimeException ignored) {
-                        // 节点尚未完成入网时按 0 处理，后续连接事件会重新评估
-                    }
-                }
-            }
-            capacity += Math.min(FRAME_PORT_CHANNEL_CAPACITY, portCapacity);
-        }
-        // capacity == 0 表示线缆/节点尚未完成入网，不能据此判定过载；先乐观接入，
-        // 实际频道分配仍交给 AE 路径计算，过载状态只用于提示/后续运行限制。
-        channelOverloaded = requiredChannels > 0 && !framePorts.isEmpty()
-                && capacity > 0 && requiredChannels > capacity;
+        linkedChannels = 0;
     }
 
     /** 结构成型后延迟 repath；若端口仍为 0 频道，再重建一次线缆/端口/频道节点。 */
@@ -710,6 +935,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             frame.recreatePorts();
         }
         repathChannelNetworks();
+        scheduleLinkedChannelRefresh(20);
     }
 
     /** 由框架方块实体在端口建立后调用。 */
@@ -723,20 +949,19 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             return;
         }
 
-        refreshChannelOverload();
-        connectPort(port);
-        // 端口是在频道节点之后才出现的；立即重算一次路径，避免 UI 先看到 0 频道
+        // 新端口出现后统一重排一次频道分配；同一 tick 的多块框架只排一次。
+        scheduleChannelAssignment();
         repathChannelNetworks();
     }
 
-    /** 框架端口的线缆连接发生变化后重新评估可用容量。 */
+    /** 框架端口的线缆连接发生变化后重新测量容量并重排频道。 */
     void onFramePortConnectionChanged() {
         if (!(level instanceof ServerLevel) || framePorts.isEmpty()) {
             return;
         }
 
-        // 仅更新容量过载状态；频道连接本身交给 AE 路径分配处理
-        refreshChannelOverload();
+        scheduleChannelAssignment();
+        scheduleLinkedChannelRefresh(20);
     }
 
     /** 由框架方块实体在拆除/解绑时调用。 */
@@ -746,36 +971,8 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         }
 
         disconnectPort(port);
-        refreshChannelOverload();
-    }
-
-    private void connectPort(IGridNode port) {
-        if (port == null) {
-            return;
-        }
-
-        for (IManagedGridNode managed : channelNodes) {
-            IGridNode channel = managed.getNode();
-            if (channel == null) {
-                continue;
-            }
-
-            boolean exists = false;
-            for (IGridConnection connection : port.getConnections()) {
-                if (connection.getOtherSide(port) == channel) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                try {
-                    channelConnections.add(GridHelper.createConnection(port, channel));
-                } catch (RuntimeException e) {
-                    // 端口/节点可能正处于拆除过程中；记录后继续，不能让结构刷新整体失败
-                    LOGGER.warn("Failed to connect matrix frame port to channel node at {}", worldPosition, e);
-                }
-            }
-        }
+        scheduleChannelAssignment();
+        scheduleLinkedChannelRefresh(20);
     }
 
     private void disconnectPort(IGridNode port) {
@@ -795,13 +992,6 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         }
     }
 
-    private void connectAllPorts() {
-        disconnectAllPorts();
-        for (IGridNode port : framePorts.keySet()) {
-            connectPort(port);
-        }
-    }
-
     private void disconnectAllPorts() {
         for (IGridConnection connection : channelConnections) {
             try {
@@ -816,7 +1006,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     /**
      * 把结构内的框架方块绑定到本监控器；只有位置发生变化时才触发相邻线缆重新扫描。
      */
-    private void syncFrames(MatrixStructureBounds bounds) {
+    private void syncFrames(MatrixStructureMatch match) {
         if (!(level instanceof ServerLevel serverLevel)) {
             return;
         }
@@ -824,35 +1014,28 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         boolean forceRevalidate = revalidateFrames;
         revalidateFrames = false;
         List<BlockPos> previous = framePositions;
-        Set<BlockPos> currentSet = new HashSet<>();
+
+        // 验证阶段已经记录了框架位置；这里只需回读这些位置，不再遍历整个包围盒。
         List<BlockPos> current = new ArrayList<>();
-        for (int x = bounds.min().getX(); x <= bounds.max().getX(); x++) {
-            for (int y = bounds.min().getY(); y <= bounds.max().getY(); y++) {
-                for (int z = bounds.min().getZ(); z <= bounds.max().getZ(); z++) {
-                    BlockPos pos = new BlockPos(x, y, z);
-                    if (bounds.boundaryCount(pos) == 0) {
-                        continue;
-                    }
+        for (BlockPos pos : match.layout().positions(MatrixBlockRole.FRAME)) {
+            BlockState state = serverLevel.getBlockState(pos);
+            if (state.getBlock() instanceof MatrixFrameBlock) {
+                current.add(pos);
+            }
+        }
+        Set<BlockPos> currentSet = new HashSet<>(current);
 
-                    BlockState state = serverLevel.getBlockState(pos);
-                    if (!(state.getBlock() instanceof MatrixFrameBlock)) {
-                        continue;
-                    }
-
-                    current.add(pos);
-                    currentSet.add(pos);
-                    if (serverLevel.getBlockEntity(pos) instanceof MatrixFrameBlockEntity frame) {
-                        boolean changed = frame.bindToMonitor(worldPosition);
-                        if (changed || forceRevalidate) {
-                            // 延后到下一 tick，避免在成型判定过程中触发监控器/线缆的递归刷新
-                            BlockState frameState = state;
-                            serverLevel.getServer().execute(() -> {
-                                if (!isRemoved() && level != null) {
-                                    level.updateNeighborsAt(pos, frameState.getBlock());
-                                }
-                            });
+        for (BlockPos pos : current) {
+            BlockState state = serverLevel.getBlockState(pos);
+            if (serverLevel.getBlockEntity(pos) instanceof MatrixFrameBlockEntity frame) {
+                boolean changed = frame.bindToMonitor(worldPosition);
+                if (changed || forceRevalidate) {
+                    // 延后到下一 tick，避免在成型判定过程中触发监控器/线缆的递归刷新
+                    serverLevel.getServer().execute(() -> {
+                        if (!isRemoved() && level != null) {
+                            level.updateNeighborsAt(pos, state.getBlock());
                         }
-                    }
+                    });
                 }
             }
         }
@@ -875,7 +1058,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
      * 保证任何贴在外壳上的线缆都重新尝试接入，同时也不会在结构内部造成无限递归
      * （监控器只在外壳边界之外的方块上发更新，且同一 tick 只调度一次）。</p>
      */
-    private void scheduleShellNeighborUpdates(MatrixStructureBounds bounds) {
+    private void scheduleShellNeighborUpdates(MatrixStructureLayout layout) {
         if (shellRevalidationScheduled || !(level instanceof ServerLevel serverLevel)) {
             return;
         }
@@ -887,27 +1070,26 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
                 return;
             }
 
-            for (int x = bounds.min().getX(); x <= bounds.max().getX(); x++) {
-                for (int y = bounds.min().getY(); y <= bounds.max().getY(); y++) {
-                    for (int z = bounds.min().getZ(); z <= bounds.max().getZ(); z++) {
-                        BlockPos pos = new BlockPos(x, y, z);
-                        if (bounds.boundaryCount(pos) == 0) {
-                            continue;
-                        }
-                        BlockState state = currentLevel.getBlockState(pos);
-                        currentLevel.updateNeighborsAt(pos, state.getBlock());
-                    }
-                }
+            // 外壳位置同样来自验证快照，不再重新遍历整个包围盒。
+            for (BlockPos pos : layout.shell()) {
+                BlockState state = currentLevel.getBlockState(pos);
+                currentLevel.updateNeighborsAt(pos, state.getBlock());
             }
         });
     }
 
     private void clearFrames() {
         if (level instanceof ServerLevel serverLevel) {
+            // 端口可能来自尚未写入 framePositions 的框架（例如线缆先于同步查询），
+            // 因此以 framePorts 的 owner 为准，避免留下无法回收的端口节点。
+            Set<MatrixFrameBlockEntity> frames = new HashSet<>(framePorts.values());
             for (BlockPos pos : framePositions) {
                 if (serverLevel.getBlockEntity(pos) instanceof MatrixFrameBlockEntity frame) {
-                    frame.unbindFromMonitor();
+                    frames.add(frame);
                 }
+            }
+            for (MatrixFrameBlockEntity frame : frames) {
+                frame.unbindFromMonitor();
             }
         }
         framePositions = List.of();
@@ -919,35 +1101,33 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         return requiredChannels;
     }
 
-    /** 端口容量不足、AE 分配不足或频道数超过实现上限时为 true。 */
+    /**
+     * 是否存在“因频道不足而不可用”的样板供应器核心。
+     *
+     * <p>矩阵本身仍保持 AE 连接；只是实际链接的频道数少于结构需求，超出部分的运行能力
+     * 降级（见 {@link #effectivePatternProviderCount()}）。样板存储容量不随此缩减。</p>
+     */
     public boolean isChannelOverloaded() {
-        return channelOverloaded || networkOverloaded;
+        // 完全没有链接时属于“未接入”，不算过载；部分链接但不足才是过载。
+        return formed && linkedChannels > 0 && linkedChannels < requiredChannels;
     }
 
-    /** 仅由端口容量/实现上限导致的过载。 */
-    public boolean isCapacityOverloaded() {
-        return channelOverloaded;
+    /** 当前 AE 实际分配给矩阵的频道数。 */
+    public int linkedChannels() {
+        return linkedChannels;
     }
 
     private void onChannelNodeStateChanged() {
-        if (channelNodes.isEmpty()) {
+        // AE 可能在同一 tick 为大量节点回调 CHANNEL 状态；合并到下一 tick 统计一次，
+        // 避免 O(N²) 的全量遍历。
+        if (linkedRefreshQueued) {
             return;
         }
-
-        boolean anyOnGrid = false;
-        boolean allPowered = true;
-        for (IManagedGridNode managed : channelNodes) {
-            IGridNode node = managed.getNode();
-            if (node == null || node.getGrid() == null) {
-                continue;
-            }
-            anyOnGrid = true;
-            if (node.getUsedChannels() <= 0) {
-                allPowered = false;
-                break;
-            }
-        }
-        networkOverloaded = anyOnGrid && !allPowered;
+        linkedRefreshQueued = true;
+        scheduleTask(1, () -> {
+            linkedRefreshQueued = false;
+            refreshLinkedChannels();
+        });
     }
 
     /** 当前已创建的频道节点数量；正常情况下等于 {@link #requiredChannels()}。 */
@@ -967,17 +1147,11 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
      * 但端口/路径还未恢复，不能立刻开始发配方。</p>
      */
     public boolean isAeNetworkOperational() {
-        if (!formed || initialValidationPending || isChannelOverloaded() || requiredChannels <= 0
-                || channelNodes.size() != requiredChannels) {
+        // 不再要求“全部频道节点都拿到频道”：部分链接时矩阵依然可用，只是可用核心数减少。
+        if (!formed || initialValidationPending) {
             return false;
         }
-        for (IManagedGridNode managed : channelNodes) {
-            IGridNode node = managed.getNode();
-            if (node == null || node.getUsedChannels() <= 0) {
-                return false;
-            }
-        }
-        return true;
+        return requiredChannels <= 0 || linkedChannels > 0;
     }
 
     /** 重进世界后的初次结构判定是否仍在重试。 */
@@ -1008,11 +1182,162 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     /**
      * 当前成型详情快照；结构失效后仍会保留到延迟清理时间，因此可能不为 {@code null}。
      *
-     * <p>这是后续交互逻辑（样板槽、并行数、速度、能量等）的只读入口。</p>
+     * <p>这是服务端交互逻辑（样板槽、并行数、速度、能量等）的只读入口。
+     * 结构详情不进入 {@link #getUpdateTag()}；客户端需要展示时应通过菜单数据同步，
+     * 不要假设这里在客户端也有值。</p>
      */
     @Nullable
     public MatrixStructureInfo structureInfo() {
         return structureInfo;
+    }
+
+
+    /**
+     * 从结构中的任意矩阵方块定位到唯一监控器。
+     *
+     * <p>框架与玻璃都可能被右击；玻璃没有方块实体，因此统一从成型判定结果里取
+     * {@code monitorPos}，再回读监控器方块实体。只有结构已成型时才返回。</p>
+     */
+    @Nullable
+    public static MatrixMonitorBlockEntity findFromStructure(Level level, BlockPos pos) {
+        return MatrixMultiblocks.findMatchAt(level, pos)
+                .map(match -> level.getBlockEntity(match.monitorPos()))
+                .filter(MatrixMonitorBlockEntity.class::isInstance)
+                .map(MatrixMonitorBlockEntity.class::cast)
+                .filter(MatrixMonitorBlockEntity::isFormed)
+                .orElse(null);
+    }
+
+    @Override
+    public Component getDisplayName() {
+        return Component.translatable("gui.gtai.matrix");
+    }
+
+    @Override
+    public AbstractContainerMenu createMenu(int containerId, Inventory playerInventory, Player player) {
+        return new MatrixMenu(containerId, playerInventory, this);
+    }
+
+    /**
+     * 当前矩阵族；服务端优先使用成型详情，其次使用结构定义。
+     *
+     * <p>客户端不接收成型详情，因此这里在客户端通常返回 {@code null}；GUI 的族限制
+     * 使用菜单数据槽同步的族值，不依赖本方法。</p>
+     */
+    @Nullable
+    public MatrixFamily matrixFamily() {
+        if (structureInfo != null) {
+            return structureInfo.shellType();
+        }
+        return match == null ? null : match.definition().family();
+    }
+
+    /**
+     * 当前实际可用的样板供应器核心数（供后续配方执行器/状态展示使用）。
+     *
+     * <p>由 AE 实际分配到的频道数反推：
+     * {@code max(0, linkedChannels - channels.base) / channels.perPatternProviderCore}。
+     * 超出实际链接数的核心视为被过载，不计入可用核心；结果不会超过结构里真实的
+     * 等价核心数。</p>
+     *
+     * <p>注意：样板 GUI 的存储容量按结构中“已存储的等价样板供应器数量”计算，
+     * 不随频道链接数缩减；频道不足只影响后续运行/状态，不会让已有样板槽消失。</p>
+     */
+    public int effectivePatternProviderCount() {
+        MatrixStructureInfo info = structureInfo;
+        if (!formed || info == null) {
+            return 0;
+        }
+        int structureProviders = info.patternProviderCount();
+        int perProvider = GtaiConfig.channelPerPatternProvider();
+        int base = GtaiConfig.channelBase();
+        if (perProvider <= 0) {
+            // 核心不占频道时，只要基础频道链接成功就全部可用。
+            return linkedChannels >= base ? structureProviders : 0;
+        }
+        int providerChannels = Math.max(0, linkedChannels - base);
+        return Math.min(structureProviders, providerChannels / perProvider);
+    }
+
+    /**
+     * 样板总容量：{@code 每份等价样板供应器的槽数 × 结构中已存储的等价样板供应器数量}。
+     *
+     * <p>这是任务要求的存储容量定义，与 AE 当前是否链接到足够频道无关；频道不足只影响
+     * 后续配方运行能力（见 {@link #effectivePatternProviderCount()}），不会缩减样板槽。</p>
+     */
+    public int patternCapacity() {
+        MatrixStructureInfo info = structureInfo;
+        if (!formed || info == null) {
+            return 0;
+        }
+        long capacity = (long) info.patternProviderCount() * GtaiConfig.patternSlotsPerProvider();
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, capacity));
+    }
+
+    /** 读取绝对槽位上的样板；没有时返回 {@link ItemStack#EMPTY}。 */
+    public ItemStack getPatternStack(int index) {
+        if (index < 0) {
+            return ItemStack.EMPTY;
+        }
+        return patternStacks.getOrDefault(index, ItemStack.EMPTY);
+    }
+
+    /**
+     * 写入绝对槽位的样板。
+     *
+     * <p>这是底层存储，不校验容量/族；槽位交互与网络包在写入前分别通过
+     * {@link #mayPlacePattern(int, ItemStack)} 校验。样板固定只保存 1 个。</p>
+     */
+    public void setPatternStack(int index, ItemStack stack) {
+        if (index < 0) {
+            return;
+        }
+        if (stack == null || stack.isEmpty()) {
+            if (patternStacks.remove(index) != null) {
+                setChanged();
+            }
+            return;
+        }
+        ItemStack copy = stack.copy();
+        copy.setCount(1);
+        ItemStack previous = patternStacks.put(index, copy);
+        if (previous == null || !ItemStack.matches(previous, copy)) {
+            setChanged();
+        }
+    }
+
+    /** 该绝对槽位当前是否允许放入这份样板。 */
+    public boolean mayPlacePattern(int index, ItemStack stack) {
+        if (index < 0 || index >= patternCapacity()) {
+            return false;
+        }
+        MatrixFamily family = matrixFamily();
+        return family != null && MatrixPatternRules.accepts(family, stack);
+    }
+
+    /** 当前库存中的样板条目数（包含容量缩小后暂时隐藏的条目）。 */
+    public int usedPatternCount() {
+        return patternStacks.size();
+    }
+
+    /**
+     * 把库存中的全部样板掉落到监控器位置并清空库存。
+     *
+     * <p>监控器被破坏或结构数据保留期结束时调用，避免样板随方块实体消失而丢失。</p>
+     */
+    public void dropStoredPatterns() {
+        if (patternStacks.isEmpty()) {
+            return;
+        }
+        if (level instanceof ServerLevel serverLevel) {
+            for (ItemStack stack : patternStacks.values()) {
+                if (!stack.isEmpty()) {
+                    Block.popResource(serverLevel, worldPosition, stack.copy());
+                }
+            }
+        }
+        patternStacks.clear();
+        setChanged();
     }
 
     /** 本次结构实际使用的框架方块状态；仅成型时有值。 */
@@ -1043,6 +1368,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     /** 方块实体移除/区块卸载时的统一收尾：断开 AE 连接并丢弃未执行的延迟任务。 */
     private void resetTransientState() {
         suppressFormationEffects = false;
+        channelAssignmentScheduled = false;
+        linkedRefreshQueued = false;
+        linkedRefreshScheduled = false;
         clearChannels();
         clearFrames();
         scheduledTasks.clear();
@@ -1061,12 +1389,18 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
     @Override
     public CompoundTag getUpdateTag() {
         CompoundTag tag = super.getUpdateTag();
-        writeState(tag);
+        // 客户端只需要渲染信息；结构详情与过压标记不进入方块更新包，避免同步体积
+        // 随结构内容增长（后续样板库存/运行状态也应走菜单数据同步，而不是这里）。
+        writeSyncState(tag);
         return tag;
     }
 
-    /** 把成型状态、渲染信息与详情写入 NBT。存档与客户端同步共用同一套键。 */
-    private void writeState(CompoundTag tag) {
+    /**
+     * 写入客户端同步需要的状态：是否成型、框架外观、能源仓位置。
+     *
+     * <p>存档与同步共用这些键；但结构详情、过压标记等只走 {@link #saveAdditional}。</p>
+     */
+    private void writeSyncState(CompoundTag tag) {
         tag.putBoolean(TAG_FORMED, formed);
 
         if (frameState != null) {
@@ -1089,6 +1423,10 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             hatches.add(entry);
         }
         tag.put(TAG_HATCHES, hatches);
+    }
+
+    /** 写入只应存在于存档中的持久状态：结构详情与待引爆的过压能源仓。 */
+    private void writePersistentState(CompoundTag tag) {
         if (pendingOvervoltageHatch != null) {
             tag.putLong(TAG_OVERVOLTAGE_HATCH, pendingOvervoltageHatch.asLong());
         } else {
@@ -1101,10 +1439,23 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
         } else {
             tag.remove(MatrixStructureInfo.TAG_ROOT);
         }
+
+        ListTag patterns = new ListTag();
+        for (Map.Entry<Integer, ItemStack> entry : patternStacks.entrySet()) {
+            ItemStack stack = entry.getValue();
+            if (stack.isEmpty()) {
+                continue;
+            }
+            CompoundTag patternTag = new CompoundTag();
+            patternTag.putInt(TAG_PATTERN_SLOT, entry.getKey());
+            patternTag.put(TAG_PATTERN_ITEM, stack.save(new CompoundTag()));
+            patterns.add(patternTag);
+        }
+        tag.put(TAG_PATTERNS, patterns);
     }
 
-    /** 从存档或客户端同步 NBT 恢复状态；不触发成型判定。 */
-    private void readState(CompoundTag data) {
+    /** 从存档或客户端同步 NBT 恢复渲染状态；不触发成型判定。 */
+    private void readSyncState(CompoundTag data) {
         formed = data.getBoolean(TAG_FORMED);
         frameState = null;
         if (data.contains(TAG_FRAME, Tag.TAG_STRING)) {
@@ -1122,16 +1473,54 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity {
             hatches.add(new BlockPos(entry.getInt("x"), entry.getInt("y"), entry.getInt("z")));
         }
         energyHatches = List.copyOf(hatches);
+    }
+
+    /**
+     * 从存档恢复持久状态；客户端同步包里没有这些键，因此客户端会得到空值。
+     * 结构失效期间数据仍然保留，真正的清理由 {@link #clearStoredData()} 负责。
+     */
+    private void readPersistentState(CompoundTag data) {
+        boolean clientSide = level != null && level.isClientSide;
 
         structureInfo = null;
         infoLoadedFromDisk = false;
-        if (data.contains(MatrixStructureInfo.TAG_ROOT, Tag.TAG_COMPOUND)) {
-            structureInfo = MatrixStructureInfo.load(data.getCompound(MatrixStructureInfo.TAG_ROOT));
-            infoLoadedFromDisk = structureInfo != null;
+        if (!clientSide) {
+            if (data.contains(MatrixStructureInfo.TAG_ROOT, Tag.TAG_COMPOUND)) {
+                structureInfo = MatrixStructureInfo.load(data.getCompound(MatrixStructureInfo.TAG_ROOT));
+                infoLoadedFromDisk = structureInfo != null;
+            }
+            pendingOvervoltageHatch = data.contains(TAG_OVERVOLTAGE_HATCH, Tag.TAG_LONG)
+                    ? BlockPos.of(data.getLong(TAG_OVERVOLTAGE_HATCH))
+                    : null;
+        } else {
+            // 客户端同步包不包含持久数据；结构详情在客户端保持为空，过压标记也没有意义
+            pendingOvervoltageHatch = null;
         }
-        pendingOvervoltageHatch = data.contains(TAG_OVERVOLTAGE_HATCH, Tag.TAG_LONG)
-                ? BlockPos.of(data.getLong(TAG_OVERVOLTAGE_HATCH))
-                : null;
+
+        // 只有确实携带样板库存的标签才清空/重建；客户端同步包没有该键，不能借此清空
+        // 客户端用于 GUI 显示的样板镜像。
+        if (data.contains(TAG_PATTERNS, Tag.TAG_LIST)) {
+            patternStacks.clear();
+            ListTag patterns = data.getList(TAG_PATTERNS, Tag.TAG_COMPOUND);
+            int count = Math.min(patterns.size(), MAX_SAVED_PATTERNS);
+            for (int i = 0; i < count; i++) {
+                CompoundTag patternTag = patterns.getCompound(i);
+                int slot = patternTag.getInt(TAG_PATTERN_SLOT);
+                if (slot < 0 || !patternTag.contains(TAG_PATTERN_ITEM, Tag.TAG_COMPOUND)) {
+                    continue;
+                }
+                ItemStack stack = ItemStack.of(patternTag.getCompound(TAG_PATTERN_ITEM));
+                if (!stack.isEmpty()) {
+                    stack.setCount(1);
+                    patternStacks.put(slot, stack);
+                }
+            }
+            if (patterns.size() > MAX_SAVED_PATTERNS) {
+                LOGGER.warn(
+                        "Matrix monitor at {} has {} saved patterns, above the supported limit {}; the rest were ignored",
+                        worldPosition, patterns.size(), MAX_SAVED_PATTERNS);
+            }
+        }
     }
 
     /**

@@ -42,12 +42,14 @@
 - 能源仓过压爆炸与核心变压器链缺失爆炸；
 - 电量为 0 的过压能源仓持久标记，后续接电立即爆炸；
 - JEI“编写样板”联动与自定义编码样板物品；
+- 矩阵样板 GUI：框架/玻璃右击打开、样板库存、族限制、滚动与 JEI 拖入；
+- 频道节点按端口容量分块连接，并按 AE 实际链接数降级运行可用核心；
 - 监控器能源仓覆盖层 BER 渲染。
 
 ### 尚未实现
 
 - 矩阵配方执行器与运行队列；
-- 矩阵 GUI、样板槽界面；
+- 信息 GUI 第二页；
 - 真正的 AE2 样板供应器/ME 接口对接；
 - 运行时能量消耗、并行数、速度/处理核心实际效果；
 - 超净间实际配方限制；
@@ -104,8 +106,23 @@
 
 - 框架侧按面创建端口，一个框架可被多根线缆分别接入；
 - 结构总频道数不是“每根线缆各算一份”，而是所有端口共享上面的 C；
+- 频道节点按每个端口的实际容量分块连接，而不是所有节点连到所有端口；
+- AE 实际链接的频道数会折算成“运行可用的样板供应器核心”；频道不足时矩阵本身保持
+  连接，不会直接拒绝接入，超出部分的运行能力降级，但样板存储槽不缩减；
 - 世界重进、结构重载、线缆后加载时会主动重扫/重连端口；
 - 监控器数据在结构失效后默认保留 600 tick（30 秒），避免短暂破坏/退出重进丢数据。
+
+### 矩阵样板 GUI
+
+- 右击任意已成型矩阵的框架或玻璃打开样板页；
+- 样板库存保存在监控器 NBT 中，关闭/重进/结构短暂失效不会丢失；
+- 总容量 = `multiBlock.patternStorage.slotsPerProvider`（默认 9）× 监控器中已存储的
+  等价样板供应器数量；该容量与 AE 当前链接的频道数无关，频道不足只影响后续运行能力；
+- 界面显示 9×4 个可见槽位，超出部分用滚轮或右侧滚动条翻页；
+- 每族仅接受同族编码样板：组装/电路组装/材料/流体材料；
+- 支持玩家背包点击、Shift 快速移动、光标携带、从监控器取出、JEI 拖入；
+- 监控器被破坏或数据保留期结束时，库存样板会掉落到监控器位置；
+- 信息 GUI 第二页尚未实现，GUI 类中已预留 `initInformationPage` / `renderInformationPage` 空入口。
 
 ### 编码样板
 
@@ -318,6 +335,13 @@ NBT 中：
     maxSize = 16
     monitorDataRetentionTicks = 600
 
+    [multiBlock.channels]
+        base = 1
+        perPatternProviderCore = 1
+
+    [multiBlock.patternStorage]
+        slotsPerProvider = 9
+
     [multiBlock.processingCore]
         extendedEquivalent = 2
 
@@ -330,6 +354,11 @@ NBT 中：
 
 - `minSize` / `maxSize`：矩阵边长范围，含外壳；
 - `monitorDataRetentionTicks`：结构失效后监控器数据保留时间，默认 600 tick；
+- `channels.base` / `channels.perPatternProviderCore`：AE2 频道公式
+  `base + perPatternProviderCore × 样板供应器等价数量`，默认值保持历史行为（1 + 数量）；
+  运行可用核心数 = `(已链接频道 - base) / perPatternProviderCore`，不会超过结构中的等价数量；
+- `patternStorage.slotsPerProvider`：每份等价样板供应器提供的样板槽数，默认 9；
+  总容量 = 本值 × 监控器中存储的等价样板供应器数量；
 - 三个 `extendedEquivalent`：扩展核心按几个普通核心计入数量/频道。
 
 ---
@@ -398,15 +427,16 @@ runtimeOnly fg.deobf("maven.modrinth:jade:${jade_version}")
 
 ```text
 src/main/java/com/Fynsh/gtai/
-├── block/          矩阵方块、方块种类、等级与环境
-├── blockentity/    监控器与框架方块实体、AE2 端口/频道
-├── multiblock/     结构扫描、验证、信息快照、爆炸规则
-├── pattern/        自定义编码样板与编码逻辑
+├── block/          矩阵方块、方块种类、等级与环境；框架/玻璃右击开 GUI
+├── blockentity/    监控器与框架方块实体、样板库存、AE2 端口/频道
+├── multiblock/     结构扫描、验证、布局快照、信息快照、爆炸规则
+├── pattern/        自定义编码样板、族匹配规则与编码逻辑
 ├── recipe/         GT 配方类型映射与存在性查询
-├── network/        JEI 编码 -> 服务端网络包
-├── integration/jei JEI 编写样板联动
+├── menu/           矩阵样板菜单、动态滚动槽位
+├── network/        JEI 编码 / JEI 样板拖入 -> 服务端网络包
+├── integration/jei JEI 编写样板与幽灵拖拽联动
 ├── mixin/          AE2 编码终端接入
-├── client/         监控器 BER 渲染
+├── client/         矩阵样板 GUI、监控器 BER 渲染
 ├── config/         通用配置
 └── util/           枚举/调度等工具
 ```
@@ -425,7 +455,7 @@ src/main/java/com/Fynsh/gtai/
 
 1. 矩阵配方执行器：读取样板供应器、执行 GT 配方、输出产物；
 2. AE2 样板供应器/ME 接口对接：让矩阵真正参与 AE 自动合成；
-3. 矩阵 GUI：样板槽、状态、频道、能量、任务队列；
+3. 信息 GUI 第二页：状态、频道、能量、任务队列；
 4. 运行时能量消耗与速度/处理核心实际效果；
 5. 超净间对配方的限制；
 6. 重进/卸载时的运行任务持久化与恢复；
@@ -436,8 +466,8 @@ src/main/java/com/Fynsh/gtai/
 ## 已知限制
 
 - 目前没有矩阵配方执行功能，不能把矩阵当作完整的自动合成机器；
-- 样板供应器核心目前主要参与结构判定和频道计数，尚未提供 AE 样板存储/发送；
-- 监控器没有 GUI；
+- 样板供应器核心参与容量与频道计数，样板实际存储在监控器；尚未接入 AE 自动合成；
+- 样板 GUI 目前只有样板页，信息页未实现；
 - 监控器/框架的 AE 频道会在重进时重建，运行中的任务必须重新获取网络状态；
 - 能源仓用于成型规则和过压检测，尚未接入运行时能量消耗；
 - 编码样板依赖 JEI；

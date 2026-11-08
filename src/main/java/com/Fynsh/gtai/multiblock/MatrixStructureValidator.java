@@ -1,6 +1,7 @@
 package com.Fynsh.gtai.multiblock;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 
 import org.jetbrains.annotations.Nullable;
@@ -85,9 +86,7 @@ public final class MatrixStructureValidator {
                     if (kind != null && kind.role() == MatrixBlockRole.FRAME) {
                         tracker.recordFrame(state);
                     }
-                    if (energyHatch) {
-                        tracker.recordEnergyHatch(pos);
-                    }
+                    tracker.recordPlacement(pos, boundary, kind, energyHatch);
                 }
             }
         }
@@ -106,6 +105,8 @@ public final class MatrixStructureValidator {
         private MatrixShellLevel glassLevel;
         private BlockState frameState;
         private final List<BlockPos> energyHatches = new ArrayList<>();
+        private final List<BlockPos> shellPositions = new ArrayList<>();
+        private final EnumMap<MatrixBlockRole, List<BlockPos>> rolePositions = new EnumMap<>(MatrixBlockRole.class);
         private BlockPos monitorPos;
         private int monitors;
         private int cleanrooms;
@@ -217,6 +218,27 @@ public final class MatrixStructureValidator {
             energyHatches.add(pos.immutable());
         }
 
+        /**
+         * 记录本次判定已经接受的位置。
+         *
+         * <p>验证循环本来就要访问每一个格子，这个方法是唯一一处“顺手建索引”的地方：
+         * 外壳位置用于后续邻居更新，角色位置用于信息收集、爆炸检查和框架绑定。
+         * 这样后续逻辑不再需要重新做整结构扫描。</p>
+         */
+        private void recordPlacement(BlockPos pos, int boundary, @Nullable MatrixBlockKind kind,
+                boolean energyHatch) {
+            BlockPos immutable = pos.immutable();
+            if (boundary > 0) {
+                shellPositions.add(immutable);
+            }
+            if (kind != null) {
+                rolePositions.computeIfAbsent(kind.role(), ignored -> new ArrayList<>()).add(immutable);
+            }
+            if (energyHatch) {
+                recordEnergyHatch(pos);
+            }
+        }
+
         @Nullable
         private MatrixStructureMatch finish() {
             if (energyHatches.size() != 1 || monitors != 1 || monitorPos == null || cleanrooms > 1) {
@@ -238,7 +260,9 @@ public final class MatrixStructureValidator {
             if (glassLevel != null && glassLevel != frameLevel) {
                 return null;
             }
-            return new MatrixStructureMatch(definition, bounds, frameState, energyHatches, monitorPos);
+            MatrixStructureLayout layout = new MatrixStructureLayout(bounds, rolePositions, shellPositions,
+                    energyHatches);
+            return new MatrixStructureMatch(definition, bounds, frameState, energyHatches, monitorPos, layout);
         }
     }
 }

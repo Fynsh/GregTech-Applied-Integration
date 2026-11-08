@@ -54,6 +54,8 @@ public class MatrixFrameBlock extends MatrixBlock implements EntityBlock {
         if (!level.isClientSide && level.getBlockEntity(pos) instanceof MatrixFrameBlockEntity frame) {
             // 线缆/总线被拆除时，框架不会收到方块实体生命周期回调，这里清理失效端口
             frame.refreshPorts();
+            // 线缆新增/移除都会改变可用频道容量：让监控器重测，过载时才能恢复接入
+            frame.requestChannelRecheck();
         }
     }
 }

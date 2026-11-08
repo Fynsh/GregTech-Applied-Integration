@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import com.Fynsh.gtai.block.MatrixBlocks;
 import com.Fynsh.gtai.blockentity.MatrixBlockEntities;
 import com.Fynsh.gtai.config.GtaiConfig;
+import com.Fynsh.gtai.menu.MatrixMenus;
 import com.Fynsh.gtai.multiblock.MatrixMultiblocks;
 import com.Fynsh.gtai.network.GtaiNetwork;
 import com.Fynsh.gtai.pattern.GtaiPatternItems;
@@ -53,6 +54,9 @@ public class GTAIMod {
         // 199 个矩阵方块；监控器核心与矩阵框架会创建方块实体（8 + 32），其余方块保持轻量结构件
         MatrixBlocks.register(modEventBus);
         MatrixBlockEntities.register(modEventBus);
+
+        // 矩阵样板 GUI 菜单类型
+        MatrixMenus.register(modEventBus);
 
         // 四种矩阵结构定义（组装 / 电路组装 / 材料 / 流体材料）
         MatrixMultiblocks.register();

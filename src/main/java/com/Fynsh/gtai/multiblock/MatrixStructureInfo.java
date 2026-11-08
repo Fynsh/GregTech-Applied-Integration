@@ -133,11 +133,25 @@ public record MatrixStructureInfo(
     }
 
     /**
+     * 当前结构应占用的 AE 频道数。
+     *
+     * <p>公式集中在这里，避免监控器、后续执行器和界面各自复制一份：
+     * {@code base + perPatternProviderCore * 样板供应器等价数量}。
+     * 默认值（1 + 数量）与历史实现完全一致；需要改变容量/频道耦合规则时只改配置或本方法。</p>
+     */
+    public int requiredChannels() {
+        long required = (long) GtaiConfig.channelBase()
+                + (long) patternProviderCount * GtaiConfig.channelPerPatternProvider();
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, required));
+    }
+
+    /**
      * 扫描一个已成型结构，收集本阶段要求写入的全部信息。
      *
      * <p>该方法在成型判定成功之后调用；它不修改方块、不修改结构状态。
-     * 结构信息来自 {@link MatrixStructureMatch}（外壳类型/等级、能源仓位置），
-     * 内容方块与过滤器从世界里逐格扫描得到。有效矩阵等级之外的核心不会写入结果。</p>
+     * 外壳类型/等级与能源仓位置来自 {@link MatrixStructureMatch}，内容方块与过滤器
+     * 则通过验证阶段建立的 {@link MatrixStructureLayout} 按角色取坐标后回读，
+     * 不再重复遍历整个结构。有效矩阵等级之外的核心不会写入结果。</p>
      *
      * @return 信息快照；若框架状态异常导致无法确定外壳等级，返回 {@code null}
      */
@@ -151,7 +165,7 @@ public record MatrixStructureInfo(
             return null;
         }
 
-        MatrixStructureBounds bounds = match.bounds();
+        MatrixStructureLayout layout = match.layout();
         MatrixFamily shellType = match.definition().family();
 
         String energyVoltage = null;
@@ -173,67 +187,49 @@ public record MatrixStructureInfo(
         EnumMap<MatrixVoltage, Integer> speedCounts = new EnumMap<>(MatrixVoltage.class);
         Map<ProcessingKey, Integer> processingCounts = new LinkedHashMap<>();
         Set<TransformerEntry> transformers = new TreeSet<>(TRANSFORMER_ORDER);
-        boolean monitorExtended = false;
-        boolean cleanroom = false;
-        int cleanroomFilters = 0;
-        int sterileFilters = 0;
 
-        for (int x = bounds.min().getX(); x <= bounds.max().getX(); x++) {
-            for (int y = bounds.min().getY(); y <= bounds.max().getY(); y++) {
-                for (int z = bounds.min().getZ(); z <= bounds.max().getZ(); z++) {
-                    BlockPos pos = new BlockPos(x, y, z);
-                    BlockState state = level.getBlockState(pos);
-                    MatrixBlockKind kind = kindOf(state);
-                    if (kind == null) {
-                        continue;
-                    }
+        // 以下数据全部来自验证阶段建立的布局快照；这里只对少量关键坐标回读方块状态，
+        // 不再重复遍历整个结构。结构在验证与收集之间不会发生变化（同一 tick、同一调用链）。
+        boolean cleanroom = layout.has(MatrixBlockRole.CLEANROOM);
+        int cleanroomFilters = layout.positions(MatrixBlockRole.FILTER).size();
+        int sterileFilters = layout.positions(MatrixBlockRole.STERILE_FILTER).size();
 
-                    if (bounds.boundaryCount(pos) > 0) {
-                        // 过滤器只可能位于普通表面，这里对整个外壳扫描以保持与未来规则兼容
-                        if (kind.role() == MatrixBlockRole.FILTER) {
-                            cleanroomFilters++;
-                        } else if (kind.role() == MatrixBlockRole.STERILE_FILTER) {
-                            sterileFilters++;
-                        }
-                        continue;
-                    }
+        MatrixBlockKind monitorKind = kindAt(level, match.monitorPos(), MatrixBlockRole.MONITOR);
+        boolean monitorExtended = monitorKind != null && monitorKind.extended();
 
-                    switch (kind.role()) {
-                        case EMPTY_CORE -> {
-                            // 空核心不写入
-                        }
-                        case MONITOR -> monitorExtended = kind.extended();
-                        case PATTERN_CORE -> patternProviders += weight(kind.extended(),
-                                GtaiConfig.patternProviderExtendedEquivalent());
-                        case SPEED_CORE -> {
-                            if (kind.voltage() != null
-                                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
-                                speedCounts.merge(kind.voltage(),
-                                        weight(kind.extended(), GtaiConfig.speedCoreExtendedEquivalent()),
-                                        Integer::sum);
-                            }
-                        }
-                        case PROCESSING_CORE -> {
-                            if (kind.process() != null && kind.voltage() != null
-                                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
-                                processingCounts.merge(new ProcessingKey(kind.process(), kind.voltage()),
-                                        weight(kind.extended(), GtaiConfig.processingCoreExtendedEquivalent()),
-                                        Integer::sum);
-                            }
-                        }
-                        case TRANSFORMER -> {
-                            if (kind.voltage() != null) {
-                                transformers.add(TransformerEntry.ofVoltage(kind.voltage()));
-                            }
-                        }
-                        case ACTIVE_TRANSFORMER -> transformers.add(TransformerEntry.ofActive());
-                        case CLEANROOM -> cleanroom = true;
-                        default -> {
-                            // 其它角色不会出现在内部
-                        }
-                    }
-                }
+        for (BlockPos pos : layout.positions(MatrixBlockRole.PATTERN_CORE)) {
+            MatrixBlockKind kind = kindAt(level, pos, MatrixBlockRole.PATTERN_CORE);
+            if (kind != null) {
+                patternProviders += weight(kind.extended(), GtaiConfig.patternProviderExtendedEquivalent());
             }
+        }
+
+        for (BlockPos pos : layout.positions(MatrixBlockRole.SPEED_CORE)) {
+            MatrixBlockKind kind = kindAt(level, pos, MatrixBlockRole.SPEED_CORE);
+            if (kind != null && kind.voltage() != null
+                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
+                speedCounts.merge(kind.voltage(),
+                        weight(kind.extended(), GtaiConfig.speedCoreExtendedEquivalent()), Integer::sum);
+            }
+        }
+
+        for (BlockPos pos : layout.positions(MatrixBlockRole.PROCESSING_CORE)) {
+            MatrixBlockKind kind = kindAt(level, pos, MatrixBlockRole.PROCESSING_CORE);
+            if (kind != null && kind.process() != null && kind.voltage() != null
+                    && MatrixVoltageTier.of(kind.voltage()) <= matrixTier) {
+                processingCounts.merge(new ProcessingKey(kind.process(), kind.voltage()),
+                        weight(kind.extended(), GtaiConfig.processingCoreExtendedEquivalent()), Integer::sum);
+            }
+        }
+
+        for (BlockPos pos : layout.positions(MatrixBlockRole.TRANSFORMER)) {
+            MatrixBlockKind kind = kindAt(level, pos, MatrixBlockRole.TRANSFORMER);
+            if (kind != null && kind.voltage() != null) {
+                transformers.add(TransformerEntry.ofVoltage(kind.voltage()));
+            }
+        }
+        if (!layout.positions(MatrixBlockRole.ACTIVE_TRANSFORMER).isEmpty()) {
+            transformers.add(TransformerEntry.ofActive());
         }
 
         List<SpeedCoreEntry> speedCores = new ArrayList<>();
@@ -390,6 +386,13 @@ public record MatrixStructureInfo(
     @Nullable
     private static MatrixBlockKind kindOf(BlockState state) {
         return state.getBlock() instanceof MatrixBlock block ? block.kind() : null;
+    }
+
+    /** 读取指定位置，并确认它仍然是期望的角色；方块在收集期间被替换时返回 {@code null}。 */
+    @Nullable
+    private static MatrixBlockKind kindAt(BlockGetter level, BlockPos pos, MatrixBlockRole expectedRole) {
+        MatrixBlockKind kind = kindOf(level.getBlockState(pos));
+        return kind != null && kind.role() == expectedRole ? kind : null;
     }
 
     @Nullable

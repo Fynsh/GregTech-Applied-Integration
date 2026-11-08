@@ -49,7 +49,8 @@ import com.Fynsh.gtai.util.TickTaskQueue;
  * “Connection between node [...] already exists”（历史服务端崩溃）。</p>
  *
  * <p>监控器侧的频道节点是非 in-world 节点，由监控器用 {@code GridHelper.createConnection}
- * 逻辑连接到端口；AE 的 in-world 扫描不会碰这一对节点，因此那条路径保持原样。</p>
+ * 逻辑连接到端口；AE 的 in-world 扫描不会碰这一对节点。监控器会按每个端口的 8/32
+ * 容量把频道节点<b>分块</b>分配，而不是把所有节点连到所有端口。</p>
  *
  * <p>只有框架注册这个方块实体；玻璃等其它矩阵方块没有该能力，AE 无法连接。</p>
  */
@@ -89,6 +90,9 @@ public class MatrixFrameBlockEntity extends AEBaseBlockEntity implements IInWorl
 
     /** 同一 tick 内只安排一次邻居更新，避免成型/绑定阶段重复广播。 */
     private boolean revalidationScheduled;
+
+    /** 端口批量销毁的代号；旧端口在销毁时触发的连接回调据此忽略。 */
+    private int portChangeToken;
 
     public MatrixFrameBlockEntity(BlockPos pos, BlockState state) {
         super(MatrixBlockEntities.MATRIX_FRAME.get(), pos, state);
@@ -207,12 +211,6 @@ public class MatrixFrameBlockEntity extends AEBaseBlockEntity implements IInWorl
 
         MatrixMonitorBlockEntity monitor = findMonitor();
         if (monitor == null || !monitor.isFormed()) {
-            destroyPorts();
-            return null;
-        }
-
-        // 频道数超过实现上限时结构永远无法接入，直接拒绝创建端口（真正的“禁止连接”）
-        if (monitor.isChannelOverloaded() && monitor.channelNodeCount() == 0) {
             destroyPorts();
             return null;
         }
@@ -365,12 +363,30 @@ public class MatrixFrameBlockEntity extends AEBaseBlockEntity implements IInWorl
         if (!(level instanceof ServerLevel serverLevel)) {
             return;
         }
-        // 延后到本 tick 结束，等 AE 完成连接/断开后再重新评估容量
+        int token = portChangeToken;
+        // 延后到本 tick 结束，等 AE 完成连接/断开后再重新评估容量。
+        // 如果期间端口被整体销毁（过载/解绑），旧端口的通知已经失效，必须忽略：
+        // 否则监控器会把“我们主动断开端口”误认为线缆容量发生变化，清掉拒绝状态。
         serverLevel.getServer().execute(() -> {
-            if (!isRemoved() && attachedMonitor != null) {
+            if (!isRemoved() && attachedMonitor != null && token == portChangeToken) {
                 attachedMonitor.onFramePortConnectionChanged();
             }
         });
+    }
+
+    /**
+     * 邻接方块变化：线缆可能新增/移除/更换，通知监控器重排频道连接并刷新实际链接数。
+     */
+    public void requestChannelRecheck() {
+        // 尚未绑定任何结构时不做全结构扫描；等 AE 查询/框架 onReady 再定位监控器。
+        if (attachedMonitor == null) {
+            return;
+        }
+        // 新放的线缆不一定立即被 AE 主动查询；这里主动为已有邻接节点补端口。
+        if (ensurePortsForNeighbors()) {
+            scheduleNeighborRevalidation();
+        }
+        attachedMonitor.requestChannelRecheck();
     }
 
     /** 相邻方块变化时清理已经失去线缆/总线邻居的端口。 */
@@ -407,6 +423,9 @@ public class MatrixFrameBlockEntity extends AEBaseBlockEntity implements IInWorl
     }
 
     private void destroyPorts() {
+        // 先让代号失效：批量销毁端口时 AE 会回调 onInWorldConnectionChanged，
+        // 那是我们自己的断开动作，不应被当作“线缆容量变化”。
+        portChangeToken++;
         for (Direction side : List.copyOf(portNodes.keySet())) {
             destroyPort(side);
         }

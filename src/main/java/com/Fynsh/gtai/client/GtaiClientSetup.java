@@ -1,5 +1,6 @@
 package com.Fynsh.gtai.client;
 
+import net.minecraft.client.gui.screens.MenuScreens;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraftforge.api.distmarker.Dist;
@@ -15,6 +16,7 @@ import com.Fynsh.gtai.GTAIMod;
 import com.Fynsh.gtai.block.MatrixBlocks;
 import com.Fynsh.gtai.block.MatrixRenderKind;
 import com.Fynsh.gtai.blockentity.MatrixBlockEntities;
+import com.Fynsh.gtai.menu.MatrixMenus;
 
 /**
  * 客户端初始化：给带透明像素的矩阵方块指定 cutout 渲染层。
@@ -59,6 +61,9 @@ public final class GtaiClientSetup {
                 }
             }
             LOGGER.info("Registered cutout render layer for {} matrix blocks (windows included)", cutout);
+
+            // 矩阵样板 GUI 的客户端屏幕
+            MenuScreens.register(MatrixMenus.MATRIX.get(), MatrixScreen::new);
         });
     }
 }

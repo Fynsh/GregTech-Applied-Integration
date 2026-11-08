@@ -54,7 +54,7 @@ public class MatrixMonitorBlock extends MatrixBlock implements EntityBlock {
     public void neighborChanged(BlockState state, Level level, BlockPos pos, Block neighborBlock,
             BlockPos neighborPos, boolean movedByPiston) {
         super.neighborChanged(state, level, pos, neighborBlock, neighborPos, movedByPiston);
-        refreshFormed(level, pos);
+        refreshFormed(level, pos, neighborPos);
     }
 
     @Override
@@ -64,12 +64,31 @@ public class MatrixMonitorBlock extends MatrixBlock implements EntityBlock {
         refreshFormed(level, pos);
     }
 
+    @Override
+    public void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean movedByPiston) {
+        // 监控器是样板库存的唯一持有者；方块被替换/拆除时先把样板掉落到世界，避免物品随方块实体消失
+        if (!level.isClientSide && !state.is(newState.getBlock())
+                && level.getBlockEntity(pos) instanceof MatrixMonitorBlockEntity monitor) {
+            monitor.dropStoredPatterns();
+        }
+        super.onRemove(state, level, pos, newState, movedByPiston);
+    }
+
     private static void refreshFormed(Level level, BlockPos pos) {
         if (level.isClientSide) {
             return;
         }
         if (level.getBlockEntity(pos) instanceof MatrixMonitorBlockEntity monitor) {
             monitor.refreshFormed();
+        }
+    }
+
+    private static void refreshFormed(Level level, BlockPos pos, BlockPos changed) {
+        if (level.isClientSide) {
+            return;
+        }
+        if (level.getBlockEntity(pos) instanceof MatrixMonitorBlockEntity monitor) {
+            monitor.refreshFormed(changed);
         }
     }
 }

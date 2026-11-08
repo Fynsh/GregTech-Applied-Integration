@@ -295,3 +295,136 @@ publishing {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
 }
+
+// ---------------------------------------------------------------------------
+// 矩阵资源校验
+//
+// 199 个矩阵方块的名字、模型、方块状态、掉落表与语言键都是手工维护的。新增一个维度
+// （等级/电压/处理类型/外壳）时最容易漏掉其中某一份资源；这个任务在 `check` 阶段
+// 把 Java 注册表、外部映射表和实际资源逐项对齐，避免“游戏里悄悄少了一个方块/贴图”。
+// ---------------------------------------------------------------------------
+tasks.register('verifyMatrixAssets') {
+    group = 'verification'
+    description = 'Verifies matrix block ids against 方块注册映射.txt and their blockstate/model/loot/lang/tag resources.'
+
+    def resources = file('src/main/resources')
+    def mappingTable = file('方块注册映射.txt')
+    def blockSource = file('src/main/java/com/Fynsh/gtai/block/MatrixBlocks.java')
+    def patternSource = file('src/main/java/com/Fynsh/gtai/pattern/GtaiPatternKind.java')
+
+    inputs.files(mappingTable, blockSource, patternSource)
+    inputs.dir("${resources}/assets/gtai")
+    inputs.dir("${resources}/data/gtai/loot_tables")
+    inputs.file("${resources}/data/minecraft/tags/blocks/mineable/pickaxe.json")
+
+    doLast {
+        def mappingIds = []
+        mappingTable.eachLine('UTF-8') { line ->
+            def matcher = line =~ /gtai:([a-z0-9_]+)/
+            if (matcher.find()) {
+                mappingIds << matcher.group(1)
+            }
+        }
+        mappingIds = mappingIds.unique().sort()
+
+        def sourceIds = []
+        blockSource.eachLine('UTF-8') { line ->
+            def matcher = line =~ /new MatrixBlockSpec\("([a-z0-9_]+)"/
+            if (matcher.find()) {
+                sourceIds << matcher.group(1)
+            }
+        }
+        sourceIds = sourceIds.unique().sort()
+
+        def problems = []
+        if (mappingIds.size() != 199) {
+            problems << "方块注册映射.txt contains ${mappingIds.size()} ids, expected 199"
+        }
+        if (sourceIds.size() != 199) {
+            problems << "MatrixBlocks.java contains ${sourceIds.size()} specs, expected 199"
+        }
+        def missingInSource = mappingIds - sourceIds
+        def extraInSource = sourceIds - mappingIds
+        if (!missingInSource.isEmpty()) {
+            problems << "MatrixBlocks.java is missing: ${missingInSource.join(', ')}"
+        }
+        if (!extraInSource.isEmpty()) {
+            problems << "MatrixBlocks.java has unknown ids: ${extraInSource.join(', ')}"
+        }
+
+        def zh = new groovy.json.JsonSlurper().parse(new File(resources, 'assets/gtai/lang/zh_cn.json'))
+        def en = new groovy.json.JsonSlurper().parse(new File(resources, 'assets/gtai/lang/en_us.json'))
+        def pickaxe = new groovy.json.JsonSlurper()
+                .parse(new File(resources, 'data/minecraft/tags/blocks/mineable/pickaxe.json'))
+        def pickaxeValues = pickaxe.values.collect { it.toString() } as Set
+
+        mappingIds.each { id ->
+            ['blockstates', 'models/block', 'models/item'].each { dir ->
+                if (!new File(resources, "assets/gtai/${dir}/${id}.json").isFile()) {
+                    problems << "missing assets/gtai/${dir}/${id}.json"
+                }
+            }
+            if (!new File(resources, "data/gtai/loot_tables/blocks/${id}.json").isFile()) {
+                problems << "missing loot table for ${id}"
+            }
+            def blockModel = new File(resources, "assets/gtai/models/block/${id}.json")
+            if (blockModel.isFile()) {
+                def model = new groovy.json.JsonSlurper().parse(blockModel)
+                model.textures?.each { key, value ->
+                    if (value instanceof String && value.startsWith('gtai:')) {
+                        def texturePath = value.substring('gtai:'.length())
+                        if (!new File(resources, "assets/gtai/textures/${texturePath}.png").isFile()) {
+                            problems << "missing texture ${value} referenced by ${id}"
+                        }
+                    }
+                }
+            }
+            // GString 与 String 的 equals/hashCode 不同，查 Map/Set 前必须显式转成 String。
+            def blockKey = 'block.gtai.' + id
+            def tagKey = 'gtai:' + id
+            if (!zh.containsKey(blockKey)) {
+                problems << "missing zh_cn ${blockKey}"
+            }
+            if (!en.containsKey(blockKey)) {
+                problems << "missing en_us ${blockKey}"
+            }
+            if (!pickaxeValues.contains(tagKey)) {
+                problems << "missing pickaxe tag entry for ${id}"
+            }
+        }
+
+        def patternIds = []
+        patternSource.eachLine('UTF-8') { line ->
+            def matcher = line =~ /^\s*[A-Z_]+\("([a-z0-9_]+_processing_pattern)"\)/
+            if (matcher.find()) {
+                patternIds << matcher.group(1)
+            }
+        }
+        patternIds = patternIds.unique().sort()
+        patternIds.each { id ->
+            if (!new File(resources, "assets/gtai/models/item/${id}.json").isFile()) {
+                problems << "missing pattern item model for ${id}"
+            }
+            if (!new File(resources, "assets/gtai/textures/item/${id}.png").isFile()) {
+                problems << "missing pattern texture for ${id}"
+            }
+            def itemKey = 'item.gtai.' + id
+            if (!zh.containsKey(itemKey)) {
+                problems << "missing zh_cn ${itemKey}"
+            }
+            if (!en.containsKey(itemKey)) {
+                problems << "missing en_us ${itemKey}"
+            }
+        }
+
+        new File(project.buildDir, 'verify-assets-problems.txt').setText(problems.join('\n'), 'UTF-8')
+        if (!problems.isEmpty()) {
+            throw new GradleException("Matrix asset verification failed: ${problems.size()} problem(s), see build/verify-assets-problems.txt")
+        }
+        println "Matrix assets verified: ${mappingIds.size()} blocks, ${patternIds.size()} pattern items"
+    }
+}
+
+tasks.matching { it.name == 'check' }.configureEach {
+    dependsOn 'verifyMatrixAssets'
+}

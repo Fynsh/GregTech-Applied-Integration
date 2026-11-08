@@ -8,11 +8,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import org.jetbrains.annotations.Nullable;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 
 import com.Fynsh.gtai.GTAIMod;
+import com.Fynsh.gtai.block.MatrixBlock;
+import com.Fynsh.gtai.block.MatrixBlockKind;
+import com.Fynsh.gtai.block.MatrixBlockRole;
 import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.block.MatrixProcess;
 
@@ -83,6 +89,16 @@ public final class MatrixMultiblocks {
     public static Optional<MatrixStructureMatch> findMatch(Level level, BlockPos min, BlockPos max) {
         register();
         MatrixStructureBounds bounds = new MatrixStructureBounds(min, max);
+
+        // 合法结构的最小角一定是矩阵框架，而框架类型唯一决定结构定义。
+        // 先据此选定定义，避免像原来那样对四种定义各做一次整结构扫描。
+        MatrixMultiblockDefinition preferred = definitionAt(level, bounds.min());
+        if (preferred != null) {
+            return Optional.ofNullable(MatrixStructureValidator.match(preferred, level, bounds));
+        }
+
+        // 最小角不是框架（仍在搭建、或调用方传入任意包围盒）时保留原行为：
+        // 依次尝试全部定义，第一个匹配的胜出。
         for (MatrixMultiblockDefinition definition : BY_ID.values()) {
             MatrixStructureMatch match = MatrixStructureValidator.match(definition, level, bounds);
             if (match != null) {
@@ -90,6 +106,24 @@ public final class MatrixMultiblocks {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * 读取位置上的框架类型并反查结构定义；不是框架或类型未知时返回 {@code null}。
+     *
+     * <p>只读取一个方块，不触发扫描；未知类型走完整回退路径，保持原有容错行为。</p>
+     */
+    @Nullable
+    private static MatrixMultiblockDefinition definitionAt(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (!(state.getBlock() instanceof MatrixBlock block)) {
+            return null;
+        }
+        MatrixBlockKind kind = block.kind();
+        if (kind.role() != MatrixBlockRole.FRAME || kind.family() == null) {
+            return null;
+        }
+        return BY_FAMILY.get(kind.family());
     }
 
     /** 给定六个边界，返回匹配的定义；不匹配返回空。 */

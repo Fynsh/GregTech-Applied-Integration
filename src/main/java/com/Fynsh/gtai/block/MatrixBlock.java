@@ -2,9 +2,15 @@ package com.Fynsh.gtai.block;
 
 import appeng.block.AEBaseBlock;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraftforge.network.NetworkHooks;
 
 import com.Fynsh.gtai.blockentity.MatrixMonitorBlockEntity;
 
@@ -36,6 +42,41 @@ public class MatrixBlock extends AEBaseBlock {
     /** 这个方块在结构中的语义，等价于 {@code spec().kind()}。 */
     public MatrixBlockKind kind() {
         return spec.kind();
+    }
+
+    /**
+     * 右击矩阵框架或矩阵玻璃打开样板 GUI。
+     *
+     * <p>玻璃没有方块实体，因此统一从当前结构定位监控器；只有已成型结构才会打开。
+     * 其它矩阵方块（核心、监控器、变压器等）保持原有行为。</p>
+     */
+    @Override
+    public InteractionResult use(BlockState state, Level level, BlockPos pos, Player player, InteractionHand hand,
+            BlockHitResult hit) {
+        if (hand != InteractionHand.MAIN_HAND) {
+            return InteractionResult.PASS;
+        }
+        MatrixBlockRole role = kind().role();
+        if (role != MatrixBlockRole.FRAME && role != MatrixBlockRole.GLASS) {
+            return super.use(state, level, pos, player, hand, hit);
+        }
+
+        if (level.isClientSide) {
+            // 实际开屏在服务端完成；只有客户端也认为结构成型时才消费右键，
+            // 避免未成型时挡住正常的方块放置/使用。
+            return MatrixMonitorBlockEntity.findFromStructure(level, pos) != null
+                    ? InteractionResult.SUCCESS
+                    : InteractionResult.PASS;
+        }
+
+        if (player instanceof ServerPlayer serverPlayer) {
+            MatrixMonitorBlockEntity monitor = MatrixMonitorBlockEntity.findFromStructure(level, pos);
+            if (monitor != null) {
+                NetworkHooks.openScreen(serverPlayer, monitor, buf -> buf.writeBlockPos(monitor.getBlockPos()));
+                return InteractionResult.CONSUME;
+            }
+        }
+        return InteractionResult.PASS;
     }
 
     @Override
