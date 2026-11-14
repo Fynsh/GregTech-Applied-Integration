@@ -25,6 +25,10 @@ public class MatrixGhostIngredientHandler implements IGhostIngredientHandler<Mat
 
     @Override
     public <I> List<Target<I>> getTargetsTyped(MatrixScreen screen, ITypedIngredient<I> ingredient, boolean doStart) {
+        // 信息页不显示样板槽，也不接受 JEI 拖入
+        if (!screen.isPatternPage()) {
+            return List.of();
+        }
         if (ingredient.getType() != VanillaTypes.ITEM_STACK) {
             return List.of();
         }

@@ -59,6 +59,7 @@ import com.Fynsh.gtai.multiblock.MatrixEnergyHatch;
 import com.Fynsh.gtai.multiblock.MatrixFormationExplosion;
 import com.Fynsh.gtai.multiblock.MatrixMultiblockDefinition;
 import com.Fynsh.gtai.multiblock.MatrixMultiblocks;
+import com.Fynsh.gtai.multiblock.MatrixInfoView;
 import com.Fynsh.gtai.multiblock.MatrixStructureInfo;
 import com.Fynsh.gtai.multiblock.MatrixStructureLayout;
 import com.Fynsh.gtai.multiblock.MatrixStructureMatch;
@@ -590,6 +591,11 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
     /**
      * 统计 AE 实际分配给矩阵的频道数。
      *
+     * <p>使用 {@link IGridNode#isActive()} 而不是只读 {@code getUsedChannels()}：
+     * 后者只是上一次路径计算的缓存值，线缆/网络断电或尚未完成启动时仍可能大于 0，
+     * 从而把“离线线缆”误判成已接入。{@code isActive()} 同时要求节点已通电、网格已完成
+     * 路径启动，并且（对需要频道的节点）确实拿到了频道，这才是“实际传递的频道”。</p>
+     *
      * <p>监控器用它计算“可用的样板供应器核心”：
      * {@code (linkedChannels - channels.base) / channels.perPatternProviderCore}。
      * 超出实际链接数的核心不会让矩阵断开，只是对应数量的样板槽暂时不可用。</p>
@@ -601,7 +607,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         int linked = 0;
         for (IManagedGridNode managed : channelNodes) {
             IGridNode node = managed.getNode();
-            if (node != null && node.getUsedChannels() > 0) {
+            if (node != null && node.isActive()) {
                 linked++;
             }
         }
@@ -1141,16 +1147,20 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
     }
 
     /**
-     * AE 侧是否已经真正可用：结构成型、频道节点数量正确且 AE 已经分配到频道。
+     * AE 侧是否已经真正接入并可用：结构成型、至少一个框架端口已接入，
+     * 且需要频道时 AE 已经分配到频道。
+     *
+     * <p>框架端口为 0 表示没有任何线缆/总线真正接到矩阵上，此时即使历史上残留了
+     * 频道计数也必须视为“未接入”，否则界面会错误显示绿色状态。</p>
      *
      * <p>后续配方运行逻辑应以此为启动条件；刚重进世界时 {@link #isFormed()} 可能已经为 true，
      * 但端口/路径还未恢复，不能立刻开始发配方。</p>
      */
     public boolean isAeNetworkOperational() {
-        // 不再要求“全部频道节点都拿到频道”：部分链接时矩阵依然可用，只是可用核心数减少。
-        if (!formed || initialValidationPending) {
+        if (!formed || initialValidationPending || framePorts.isEmpty()) {
             return false;
         }
+        // 不再要求“全部频道节点都拿到频道”：部分链接时矩阵依然可用，只是可用核心数减少。
         return requiredChannels <= 0 || linkedChannels > 0;
     }
 
@@ -1257,6 +1267,48 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         }
         int providerChannels = Math.max(0, linkedChannels - base);
         return Math.min(structureProviders, providerChannels / perProvider);
+    }
+
+    /**
+     * 构造信息 GUI 使用的只读快照。
+     *
+     * <p>结构详情不进入方块更新包，信息页所需的全部数据由菜单打开包与
+     * {@code MatrixInfoPacket} 走网络同步；客户端不需要也不应该读取本方块实体。</p>
+     *
+     * <p>其中“可用样板容量”按实际链接频道折算，不包含被过载的样板供应器；
+     * 样板页使用的 {@link #patternCapacity()} 仍是结构总容量，两者含义不同。</p>
+     */
+    public MatrixInfoView createInfoView() {
+        MatrixStructureInfo info = structureInfo;
+        if (info == null) {
+            return new MatrixInfoView(false, matrixFamily(), 0, 0, 0, 0,
+                    false, 0, 0, 0, 0,
+                    List.of(), List.of(), List.of(), false, false, MatrixStructureInfo.FilterType.NONE, 0);
+        }
+        // GUI 每 tick 都会构造快照：这里重新按实际活跃频道统计，断电/断线能立即反映到界面，
+        // 而不是等待 serverTick 的 20 tick 周期兜底刷新。
+        refreshLinkedChannels();
+        int availableProviders = effectivePatternProviderCount();
+        long availableCapacity = (long) availableProviders * GtaiConfig.patternSlotsPerProvider();
+        return new MatrixInfoView(
+                info.monitorExtended(),
+                info.shellType(),
+                info.patternProviderCount(),
+                availableProviders,
+                (int) Math.min(Integer.MAX_VALUE, Math.max(0L, availableCapacity)),
+                usedPatternCount(),
+                isAeNetworkOperational(),
+                linkedChannels(),
+                requiredChannels(),
+                channelNodeCount(),
+                framePortCount(),
+                info.speedCores(),
+                info.processingCores(),
+                info.transformers(),
+                info.cleanroom(),
+                info.cleanroomUsable(),
+                info.filterType(),
+                info.filterCount());
     }
 
     /**

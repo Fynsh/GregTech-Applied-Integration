@@ -87,7 +87,8 @@ public class MatrixPatternSlot extends Slot {
 
     @Override
     public boolean isActive() {
-        return menu.isPatternSlotActive(visibleIndex);
+        // 信息页整页隐藏槽位；样板页再按容量/滚动窗口判断
+        return !menu.areSlotsHidden() && menu.isPatternSlotActive(visibleIndex);
     }
 
     @Override

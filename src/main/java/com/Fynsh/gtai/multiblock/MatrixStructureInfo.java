@@ -52,13 +52,17 @@ import com.Fynsh.gtai.util.IdEnum;
  *   processing_cores: [ {process:"assembly", voltage:"lv", count:4}, ... ],
  *   transformers: [ "lv", "active" ],       // 只写 K，不写数量
  *   cleanroom: 1b,                          // 内部是否有集成超净间
- *   filter_type: "cleanroom",               // none / cleanroom / sterile
- *   filter_count: 4                         // 过滤器方块数量
+ *   cleanroom_usable: 0b,                   // 写入阶段判定的超净间是否可用
+ *   filter_type: "mixed",                   // none / cleanroom / sterile / mixed
+ *   filter_count: 4,                        // 过滤器方块总数
+ *   cleanroom_filter_count: 3,              // 超净过滤器数量
+ *   sterile_filter_count: 1                 // 无菌过滤器数量
  * }
  * </pre>
  *
  * <p>信息收集规则：空核心不写入；样板供应器/速度核心/处理核心按扩展等价配置加权并合并；
- * 变压器只记录类型；过滤器仅在“存在超净间且未混用”时写入有效类型与数量。
+ * 变压器只记录类型；超净间在写入阶段记录是否存在、两种过滤器的实际数量，以及是否可用。
+ * 过滤器类型与可用性由数量派生：只有一种过滤器时可用，两种混用或完全没有过滤器时不可用。
  * 写入监控器时，电压高于有效矩阵等级的速度核心/处理核心会被过滤掉。</p>
  */
 public record MatrixStructureInfo(
@@ -73,14 +77,19 @@ public record MatrixStructureInfo(
         List<SpeedCoreEntry> speedCores,
         List<ProcessingCoreEntry> processingCores,
         List<TransformerEntry> transformers,
+        /** 内部是否存在集成超净间。 */
         boolean cleanroom,
-        FilterType filterType,
-        int filterCount) {
+        /** 监控器写入阶段判定的超净间是否可用；GUI 只读取该结果。 */
+        boolean cleanroomUsable,
+        /** 超净过滤器机械方块数量。 */
+        int cleanroomFilterCount,
+        /** 无菌过滤器机械方块数量。 */
+        int sterileFilterCount) {
 
     /** 监控器 BlockEntity NBT 中的根键。 */
     public static final String TAG_ROOT = "gtai_multiblock";
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final String TAG_VERSION = "version";
     private static final String TAG_SHELL_TYPE = "shell_type";
     private static final String TAG_SHELL_LEVEL = "shell_level";
@@ -92,8 +101,11 @@ public record MatrixStructureInfo(
     private static final String TAG_PROCESSING_CORES = "processing_cores";
     private static final String TAG_TRANSFORMERS = "transformers";
     private static final String TAG_CLEANROOM = "cleanroom";
+    private static final String TAG_CLEANROOM_USABLE = "cleanroom_usable";
     private static final String TAG_FILTER_TYPE = "filter_type";
     private static final String TAG_FILTER_COUNT = "filter_count";
+    private static final String TAG_CLEANROOM_FILTER_COUNT = "cleanroom_filter_count";
+    private static final String TAG_STERILE_FILTER_COUNT = "sterile_filter_count";
     private static final String TAG_VOLTAGE = "voltage";
     private static final String TAG_COUNT = "count";
     private static final String TAG_PROCESS = "process";
@@ -124,12 +136,47 @@ public record MatrixStructureInfo(
         speedCores = speedCores.stream().sorted(SPEED_CORE_ORDER).toList();
         processingCores = processingCores.stream().sorted(PROCESSING_CORE_ORDER).toList();
         transformers = transformers.stream().distinct().sorted(TRANSFORMER_ORDER).toList();
-        Objects.requireNonNull(filterType, "filterType");
-        if (filterType == FilterType.NONE || filterCount <= 0) {
-            // “无类型”必须配 0 数量；有类型时数量也必须为正，避免写出矛盾组合
-            filterType = FilterType.NONE;
-            filterCount = 0;
+        if (!cleanroom) {
+            // 没有超净间时过滤器数量与可用性都没有意义；即使外壳上放了过滤器也不写入
+            cleanroomUsable = false;
+            cleanroomFilterCount = 0;
+            sterileFilterCount = 0;
+        } else {
+            cleanroomFilterCount = Math.max(0, cleanroomFilterCount);
+            sterileFilterCount = Math.max(0, sterileFilterCount);
+            // 完全没有过滤器时不可能可用；其余情况以写入阶段传入的判定为准
+            if (cleanroomFilterCount <= 0 && sterileFilterCount <= 0) {
+                cleanroomUsable = false;
+            }
         }
+    }
+
+    /** 过滤器机械方块总数；没有超净间时为 0。 */
+    public int filterCount() {
+        return cleanroom ? cleanroomFilterCount + sterileFilterCount : 0;
+    }
+
+    /**
+     * 超净间过滤器类型。
+     *
+     * <p>由两种过滤器的实际数量派生：只有超净过滤器时为 {@link FilterType#CLEANROOM}，
+     * 只有无菌过滤器时为 {@link FilterType#STERILE}，两种混用时为 {@link FilterType#MIXED}；
+     * 没有超净间或没有任何过滤器时为 {@link FilterType#NONE}。</p>
+     */
+    public FilterType filterType() {
+        if (!cleanroom) {
+            return FilterType.NONE;
+        }
+        if (cleanroomFilterCount > 0 && sterileFilterCount > 0) {
+            return FilterType.MIXED;
+        }
+        if (cleanroomFilterCount > 0) {
+            return FilterType.CLEANROOM;
+        }
+        if (sterileFilterCount > 0) {
+            return FilterType.STERILE;
+        }
+        return FilterType.NONE;
     }
 
     /**
@@ -246,22 +293,16 @@ public record MatrixStructureInfo(
                 .add(new ProcessingCoreEntry(key.process(), key.voltage(), count)));
         processingCores.sort(PROCESSING_CORE_ORDER);
 
-        FilterType filterType = FilterType.NONE;
-        int filterCount = 0;
-        if (cleanroom) {
-            if (cleanroomFilters > 0 && sterileFilters == 0) {
-                filterType = FilterType.CLEANROOM;
-                filterCount = cleanroomFilters;
-            } else if (sterileFilters > 0 && cleanroomFilters == 0) {
-                filterType = FilterType.STERILE;
-                filterCount = sterileFilters;
-            }
-            // 混用或没有过滤器时保持 NONE / 0
-        }
+        // 超净间的原始数据全部写入：是否存在、两种过滤器各自的数量。
+        // 过滤器类型由数量派生；可用性在写入阶段判定并随记录/NBT 保存，避免“混用”被折叠后丢失信息。
+        int cleanroomFilterCount = cleanroom ? cleanroomFilters : 0;
+        int sterileFilterCount = cleanroom ? sterileFilters : 0;
+        // 写入阶段判定：恰好只有一种过滤器时可用；混用或没有过滤器时不可用
+        boolean cleanroomUsable = cleanroom && ((cleanroomFilterCount > 0) != (sterileFilterCount > 0));
 
         return new MatrixStructureInfo(shellType, shellLevel, matrixLevel, energyVoltage, monitorExtended,
-                patternProviders, speedCores, processingCores, new ArrayList<>(transformers), cleanroom, filterType,
-                filterCount);
+                patternProviders, speedCores, processingCores, new ArrayList<>(transformers), cleanroom,
+                cleanroomUsable, cleanroomFilterCount, sterileFilterCount);
     }
 
     /** 序列化为 BlockEntity NBT 中的 {@value #TAG_ROOT} 子标签。 */
@@ -303,8 +344,11 @@ public record MatrixStructureInfo(
         tag.put(TAG_TRANSFORMERS, transformerList);
 
         tag.putBoolean(TAG_CLEANROOM, cleanroom);
-        tag.putString(TAG_FILTER_TYPE, filterType.id());
-        tag.putInt(TAG_FILTER_COUNT, filterCount);
+        tag.putBoolean(TAG_CLEANROOM_USABLE, cleanroomUsable);
+        tag.putString(TAG_FILTER_TYPE, filterType().id());
+        tag.putInt(TAG_FILTER_COUNT, filterCount());
+        tag.putInt(TAG_CLEANROOM_FILTER_COUNT, cleanroomFilterCount);
+        tag.putInt(TAG_STERILE_FILTER_COUNT, sterileFilterCount);
         return tag;
     }
 
@@ -368,15 +412,32 @@ public record MatrixStructureInfo(
         }
         transformers.sort(TRANSFORMER_ORDER);
 
-        FilterType filterType = FilterType.byIdOrNull(tag.getString(TAG_FILTER_TYPE));
-        if (filterType == null) {
-            filterType = FilterType.NONE;
+        boolean cleanroom = tag.getBoolean(TAG_CLEANROOM);
+        int cleanroomFilterCount;
+        int sterileFilterCount;
+        if (tag.contains(TAG_CLEANROOM_FILTER_COUNT, Tag.TAG_INT)
+                || tag.contains(TAG_STERILE_FILTER_COUNT, Tag.TAG_INT)) {
+            cleanroomFilterCount = Math.max(0, tag.getInt(TAG_CLEANROOM_FILTER_COUNT));
+            sterileFilterCount = Math.max(0, tag.getInt(TAG_STERILE_FILTER_COUNT));
+        } else {
+            // v1 只保存“有效”的过滤器类型与数量；混用/缺失被折叠成 NONE/0，无法恢复原始数量。
+            FilterType legacyType = FilterType.byIdOrNull(tag.getString(TAG_FILTER_TYPE));
+            int legacyCount = Math.max(0, tag.getInt(TAG_FILTER_COUNT));
+            cleanroomFilterCount = legacyType == FilterType.CLEANROOM ? legacyCount : 0;
+            sterileFilterCount = legacyType == FilterType.STERILE ? legacyCount : 0;
         }
-        int filterCount = Math.max(0, tag.getInt(TAG_FILTER_COUNT));
+
+        boolean cleanroomUsable;
+        if (tag.contains(TAG_CLEANROOM_USABLE, Tag.TAG_BYTE)) {
+            cleanroomUsable = tag.getBoolean(TAG_CLEANROOM_USABLE);
+        } else {
+            // v1 没有独立的可用性字段：按当时的规则（恰好一种过滤器）补算
+            cleanroomUsable = cleanroom && ((cleanroomFilterCount > 0) != (sterileFilterCount > 0));
+        }
 
         return new MatrixStructureInfo(shellType, shellLevel, matrixLevel, energyVoltage, monitorExtended,
-                patternProviderCount, speedCores, processingCores, transformers, tag.getBoolean(TAG_CLEANROOM),
-                filterType, filterCount);
+                patternProviderCount, speedCores, processingCores, transformers, cleanroom,
+                cleanroomUsable, cleanroomFilterCount, sterileFilterCount);
     }
 
     private static int weight(boolean extended, int extendedEquivalent) {
@@ -470,14 +531,17 @@ public record MatrixStructureInfo(
     /** 集成过滤器类型。 */
     public enum FilterType implements IdEnum {
 
-        /** 无过滤器，或规则判定为无效（无超净间 / 混用）。 */
+        /** 没有超净间，或超净间内没有过滤器。 */
         NONE("none"),
 
-        /** 超净过滤器。 */
+        /** 只有超净过滤器。 */
         CLEANROOM("cleanroom"),
 
-        /** 无菌过滤器。 */
-        STERILE("sterile");
+        /** 只有无菌过滤器。 */
+        STERILE("sterile"),
+
+        /** 超净过滤器与无菌过滤器混用，监控器判定为不可用。 */
+        MIXED("mixed");
 
         private final String id;
 

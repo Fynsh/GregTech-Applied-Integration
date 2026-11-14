@@ -72,7 +72,11 @@ public class MatrixBlock extends AEBaseBlock {
         if (player instanceof ServerPlayer serverPlayer) {
             MatrixMonitorBlockEntity monitor = MatrixMonitorBlockEntity.findFromStructure(level, pos);
             if (monitor != null) {
-                NetworkHooks.openScreen(serverPlayer, monitor, buf -> buf.writeBlockPos(monitor.getBlockPos()));
+                NetworkHooks.openScreen(serverPlayer, monitor, buf -> {
+                    buf.writeBlockPos(monitor.getBlockPos());
+                    // 结构详情不走方块更新包；信息页需要的快照随菜单打开包一起发送
+                    monitor.createInfoView().write(buf);
+                });
                 return InteractionResult.CONSUME;
             }
         }

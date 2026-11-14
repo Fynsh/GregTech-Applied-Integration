@@ -18,6 +18,9 @@ import net.minecraft.world.item.ItemStack;
 
 import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.blockentity.MatrixMonitorBlockEntity;
+import com.Fynsh.gtai.multiblock.MatrixInfoView;
+import com.Fynsh.gtai.network.GtaiNetwork;
+import com.Fynsh.gtai.network.MatrixInfoPacket;
 import com.Fynsh.gtai.pattern.MatrixPatternRules;
 
 /**
@@ -38,6 +41,9 @@ public class MatrixMenu extends AbstractContainerMenu {
     public static final int PATTERN_ROWS = 4;
     public static final int PATTERN_SLOT_COUNT = PATTERN_COLUMNS * PATTERN_ROWS;
 
+    /** 左侧页签栏宽度；GUI 背景与所有槽位 x 坐标都以此偏移。 */
+    public static final int SIDEBAR_WIDTH = 44;
+
     /** 客户端通过菜单按钮发送“绝对滚动行”时使用的按钮 ID 基址。 */
     public static final int ABSOLUTE_SCROLL_BASE = 100;
 
@@ -57,28 +63,48 @@ public class MatrixMenu extends AbstractContainerMenu {
     private final SimpleContainerData data = new SimpleContainerData(DATA_COUNT);
     private final List<MatrixPatternSlot> patternSlots = new ArrayList<>();
 
+    /** 信息页快照；客户端由打开包/刷新包提供，服务端由监控器即时构造。 */
+    @Nullable
+    private MatrixInfoView infoView;
+
+    /** 服务端上一次发送给客户端的快照；用于避免每 tick 重复发包。 */
+    @Nullable
+    private MatrixInfoView lastSentInfo;
+
+    /**
+     * 信息页是否隐藏全部槽位。
+     *
+     * <p>这是客户端屏幕状态，不参与服务端逻辑；通过 {@link Slot#isActive()} 让原版
+     * {@code AbstractContainerScreen} 自动跳过槽位渲染与悬停判定。</p>
+     */
+    private boolean slotsHidden;
+
     /** 服务端打开菜单时使用。 */
     public MatrixMenu(int containerId, Inventory playerInventory, MatrixMonitorBlockEntity monitor) {
         super(MatrixMenus.MATRIX.get(), containerId);
         this.playerInventory = playerInventory;
         this.monitor = monitor;
         this.monitorPos = monitor.getBlockPos();
+        this.infoView = monitor.createInfoView();
+        this.lastSentInfo = this.infoView;
         initData();
         addSlots();
     }
 
     /** 客户端从网络包构造；方块实体应已由打开界面的流程加载。 */
     public MatrixMenu(int containerId, Inventory playerInventory, FriendlyByteBuf buf) {
-        this(containerId, playerInventory, buf.readBlockPos());
+        this(containerId, playerInventory, buf.readBlockPos(), MatrixInfoView.read(buf));
     }
 
-    private MatrixMenu(int containerId, Inventory playerInventory, BlockPos monitorPos) {
+    private MatrixMenu(int containerId, Inventory playerInventory, BlockPos monitorPos,
+            @Nullable MatrixInfoView infoView) {
         super(MatrixMenus.MATRIX.get(), containerId);
         this.playerInventory = playerInventory;
         this.monitorPos = monitorPos.immutable();
         this.monitor = playerInventory.player.level().getBlockEntity(monitorPos) instanceof MatrixMonitorBlockEntity m
                 ? m
                 : null;
+        this.infoView = infoView;
         initData();
         addSlots();
     }
@@ -95,7 +121,7 @@ public class MatrixMenu extends AbstractContainerMenu {
         for (int row = 0; row < PATTERN_ROWS; row++) {
             for (int col = 0; col < PATTERN_COLUMNS; col++) {
                 MatrixPatternSlot slot = new MatrixPatternSlot(this, row * PATTERN_COLUMNS + col,
-                        8 + col * 18, 31 + row * 18);
+                        SIDEBAR_WIDTH + 8 + col * 18, 31 + row * 18);
                 patternSlots.add(slot);
                 addSlot(slot);
             }
@@ -103,11 +129,13 @@ public class MatrixMenu extends AbstractContainerMenu {
 
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 9; col++) {
-                addSlot(new Slot(playerInventory, col + row * 9 + 9, 8 + col * 18, 117 + row * 18));
+                addSlot(new MatrixPlayerSlot(this, playerInventory, col + row * 9 + 9,
+                        SIDEBAR_WIDTH + 8 + col * 18, 117 + row * 18));
             }
         }
         for (int col = 0; col < 9; col++) {
-            addSlot(new Slot(playerInventory, col, 8 + col * 18, 175));
+            addSlot(new MatrixPlayerSlot(this, playerInventory, col,
+                    SIDEBAR_WIDTH + 8 + col * 18, 175));
         }
     }
 
@@ -199,9 +227,38 @@ public class MatrixMenu extends AbstractContainerMenu {
         return Collections.unmodifiableList(patternSlots);
     }
 
+    /** 信息页隐藏所有槽位；由客户端屏幕在切页时设置。 */
+    public void setSlotsHidden(boolean hidden) {
+        this.slotsHidden = hidden;
+    }
+
+    public boolean areSlotsHidden() {
+        return slotsHidden;
+    }
+
+    /** 信息页快照；客户端在打开包/刷新包到达前可能为 {@code null}。 */
+    @Nullable
+    public MatrixInfoView getInfoView() {
+        return infoView;
+    }
+
+    /** 客户端收到信息页快照后调用。 */
+    public void setInfoView(@Nullable MatrixInfoView infoView) {
+        this.infoView = infoView;
+    }
+
     @Override
     public void broadcastChanges() {
         if (monitor != null && !playerInventory.player.level().isClientSide) {
+            // 结构详情与运行期数据都不走方块更新包；这里只在本 tick 的值确实变化时发包。
+            MatrixInfoView view = monitor.createInfoView();
+            if (!view.equals(lastSentInfo)) {
+                lastSentInfo = view;
+                infoView = view;
+                GtaiNetwork.sendToPlayer(playerInventory.player,
+                        new MatrixInfoPacket(containerId, view));
+            }
+
             data.set(DATA_CAPACITY, monitor.patternCapacity());
             data.set(DATA_FAMILY, familyCode(monitor.matrixFamily()));
             data.set(DATA_USED, monitor.usedPatternCount());
