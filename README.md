@@ -9,7 +9,8 @@
 > 当前版本：`0.1.0-beta`（Beta）  
 > 目标环境：Minecraft 1.20.1 / Forge 47.4.10 / GTCEu 7.5.3+ / AE2 15.4.11+  
 > 仓库：<https://github.com/Fynsh/GregTech-Applied-Integration>  
-> 发布说明：[RELEASE_NOTES.md](RELEASE_NOTES.md)
+> 发布说明：[RELEASE_NOTES.md](RELEASE_NOTES.md)  
+> 开发：Fynsh（设计/评审/测试）+ DeepSeek 编码代理（代码实现/文档）
 
 > **Beta 提示**
 >
@@ -613,6 +614,13 @@ src/main/java/com/Fynsh/gtai/
 ## 许可证与致谢
 
 本项目使用 **MIT License**。
+
+### 开发与维护
+
+- **Fynsh**：项目发起、需求与规则设计、代码审查、实机测试与发布；
+- **DeepSeek 编码代理（DeepSeek Harness，`deepseek-flash` 模型）**：Java 代码实现、重构、资源/构建校验逻辑、README 与 Release 文档撰写。
+
+本项目的代码主要由 AI 编码代理在 Fynsh 的需求、评审与测试反馈下完成；设计取舍、验收标准与最终责任归项目作者。
 
 依赖与灵感：
 
