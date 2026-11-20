@@ -11,7 +11,7 @@ import com.Fynsh.gtai.GTAIMod;
 /** 本模组的网络通道：编码请求、JEI 样板槽写入与信息页快照同步。 */
 public final class GtaiNetwork {
 
-    private static final String PROTOCOL_VERSION = "4";
+    private static final String PROTOCOL_VERSION = "6";
 
     private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
             .named(GTAIMod.id("main"))

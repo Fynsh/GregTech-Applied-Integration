@@ -45,7 +45,7 @@ public enum GtaiPatternKind {
     },
 
     /**
-     * 材料编码样板：压模器、锻造锤、冲压机床、研磨机、车床、打包机、压缩机、线材轧机、卷板机。
+     * 材料编码样板：压模器、锻造锤、冲压机床、研磨机、切割机、车床、打包机、压缩机、线材轧机、卷板机。
      *
      * <p>"研磨机：回收""研磨机：粉碎回收""研磨机：矿物处理"在 GTM 里不是独立的
      * {@code GTRecipeType}，而是 {@code MACERATOR_RECIPES} 下的子类别
@@ -61,6 +61,7 @@ public enum GtaiPatternKind {
                     GTRecipeTypes.FORGE_HAMMER_RECIPES,
                     GTRecipeTypes.FORMING_PRESS_RECIPES,
                     GTRecipeTypes.MACERATOR_RECIPES,
+                    GTRecipeTypes.CUTTER_RECIPES,
                     GTRecipeTypes.LATHE_RECIPES,
                     GTRecipeTypes.PACKER_RECIPES,
                     GTRecipeTypes.COMPRESSOR_RECIPES,

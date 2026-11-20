@@ -1,8 +1,11 @@
 package com.Fynsh.gtai.multiblock;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 import org.jetbrains.annotations.Nullable;
 
@@ -11,6 +14,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.block.MatrixProcess;
 import com.Fynsh.gtai.block.MatrixVoltage;
+import com.Fynsh.gtai.pattern.MatrixPatternStatus;
 
 /**
  * 信息 GUI 使用的矩阵信息快照。
@@ -46,12 +50,17 @@ public record MatrixInfoView(
         boolean cleanroom,
         boolean cleanroomUsable,
         MatrixStructureInfo.FilterType filterType,
-        int filterCount) {
+        int filterCount,
+        /** 无法执行的样板槽位 -> 原因；只包含库存中确实存在且当前不可执行的样板。 */
+        Map<Integer, MatrixPatternStatus> blockedPatterns,
+        /** 运行状态快照；执行器未启用时为 {@link MatrixRuntimeView#EMPTY}。 */
+        MatrixRuntimeView runtime) {
 
     /** 防止损坏/恶意包构造出过大的列表；正常结构远小于这些上限。 */
     private static final int MAX_SPEED_CORES = 64;
     private static final int MAX_PROCESSING_CORES = 128;
     private static final int MAX_TRANSFORMERS = 32;
+    private static final int MAX_BLOCKED_PATTERNS = 4096;
 
     public MatrixInfoView {
         totalPatternProviders = Math.max(0, totalPatternProviders);
@@ -67,11 +76,57 @@ public record MatrixInfoView(
         transformers = List.copyOf(Objects.requireNonNull(transformers, "transformers"));
         filterType = Objects.requireNonNull(filterType, "filterType");
         filterCount = Math.max(0, filterCount);
+        TreeMap<Integer, MatrixPatternStatus> blockedCopy = new TreeMap<>();
+        if (blockedPatterns != null) {
+            blockedPatterns.forEach((slot, status) -> {
+                if (slot != null && slot >= 0 && status != null && !status.executable()) {
+                    blockedCopy.put(slot, status);
+                }
+            });
+        }
+        // 网络包上限：超大矩阵可能有上万个槽位，截断到上限以保证读写两侧长度一致。
+        while (blockedCopy.size() > MAX_BLOCKED_PATTERNS) {
+            blockedCopy.pollLastEntry();
+        }
+        blockedPatterns = Collections.unmodifiableMap(blockedCopy);
+        runtime = runtime == null ? MatrixRuntimeView.EMPTY : runtime;
         if (!cleanroom) {
             cleanroomUsable = false;
             filterType = MatrixStructureInfo.FilterType.NONE;
             filterCount = 0;
         }
+    }
+
+    /** 返回替换运行状态后的副本；用于节流判断。 */
+    public MatrixInfoView withRuntime(MatrixRuntimeView runtime) {
+        return new MatrixInfoView(monitorExtended, family, totalPatternProviders, availablePatternProviders,
+                availablePatternCapacity, usedPatternCount, aeOperational, linkedChannels, requiredChannels,
+                channelNodeCount, framePortCount, speedCores, processingCores, transformers,
+                cleanroom, cleanroomUsable, filterType, filterCount, blockedPatterns, runtime);
+    }
+
+    /** 除运行状态外，结构/AE/频道/库存等字段是否相同。 */
+    public boolean sameStructure(MatrixInfoView other) {
+        return other != null
+                && monitorExtended == other.monitorExtended
+                && family == other.family
+                && totalPatternProviders == other.totalPatternProviders
+                && availablePatternProviders == other.availablePatternProviders
+                && availablePatternCapacity == other.availablePatternCapacity
+                && usedPatternCount == other.usedPatternCount
+                && aeOperational == other.aeOperational
+                && linkedChannels == other.linkedChannels
+                && requiredChannels == other.requiredChannels
+                && channelNodeCount == other.channelNodeCount
+                && framePortCount == other.framePortCount
+                && speedCores.equals(other.speedCores)
+                && processingCores.equals(other.processingCores)
+                && transformers.equals(other.transformers)
+                && cleanroom == other.cleanroom
+                && cleanroomUsable == other.cleanroomUsable
+                && filterType == other.filterType
+                && filterCount == other.filterCount
+                && blockedPatterns.equals(other.blockedPatterns);
     }
 
     public void write(FriendlyByteBuf buf) {
@@ -115,6 +170,14 @@ public record MatrixInfoView(
         buf.writeBoolean(cleanroomUsable);
         buf.writeVarInt(filterType.ordinal());
         buf.writeVarInt(filterCount);
+
+        buf.writeVarInt(blockedPatterns.size());
+        for (Map.Entry<Integer, MatrixPatternStatus> entry : blockedPatterns.entrySet()) {
+            buf.writeVarInt(entry.getKey());
+            buf.writeVarInt(entry.getValue().ordinal());
+        }
+
+        runtime.write(buf);
     }
 
     public static MatrixInfoView read(FriendlyByteBuf buf) {
@@ -185,9 +248,21 @@ public record MatrixInfoView(
                 : MatrixStructureInfo.FilterType.NONE;
         int filterCount = Math.max(0, buf.readVarInt());
 
+        int blockedSize = Math.min(Math.max(0, buf.readVarInt()), MAX_BLOCKED_PATTERNS);
+        Map<Integer, MatrixPatternStatus> blockedPatterns = new TreeMap<>();
+        MatrixPatternStatus[] statuses = MatrixPatternStatus.values();
+        for (int i = 0; i < blockedSize; i++) {
+            int slot = buf.readVarInt();
+            int statusOrdinal = buf.readVarInt();
+            if (slot >= 0 && statusOrdinal >= 0 && statusOrdinal < statuses.length) {
+                blockedPatterns.put(slot, statuses[statusOrdinal]);
+            }
+        }
+
         return new MatrixInfoView(monitorExtended, family, totalPatternProviders, availablePatternProviders,
                 availablePatternCapacity, usedPatternCount, aeOperational, linkedChannels, requiredChannels,
                 channelNodeCount, framePortCount, speedCores, processingCores, transformers,
-                cleanroom, cleanroomUsable, filterType, filterCount);
+                cleanroom, cleanroomUsable, filterType, filterCount, blockedPatterns,
+                MatrixRuntimeView.read(buf));
     }
 }

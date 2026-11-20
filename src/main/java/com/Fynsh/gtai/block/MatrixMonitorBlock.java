@@ -70,6 +70,8 @@ public class MatrixMonitorBlock extends MatrixBlock implements EntityBlock {
         if (!level.isClientSide && !state.is(newState.getBlock())
                 && level.getBlockEntity(pos) instanceof MatrixMonitorBlockEntity monitor) {
             monitor.dropStoredPatterns();
+            // 任务输入随方块实体消失（按“结构破坏吞材料”），离线产物缓存掉落到世界
+            monitor.runtime().onDataCleared();
         }
         super.onRemove(state, level, pos, newState, movedByPiston);
     }

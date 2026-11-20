@@ -17,7 +17,9 @@ import net.minecraft.util.FormattedCharSequence;
 import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.block.MatrixProcess;
 import com.Fynsh.gtai.block.MatrixVoltage;
+import com.Fynsh.gtai.config.GtaiConfig;
 import com.Fynsh.gtai.multiblock.MatrixInfoView;
+import com.Fynsh.gtai.multiblock.MatrixRuntimeView;
 import com.Fynsh.gtai.multiblock.MatrixStructureInfo;
 
 /**
@@ -56,6 +58,24 @@ public class MatrixInfoPage {
     private static final String KEY_TRANSFORMER_ACTIVE = "gui.gtai.matrix.info.transformer.active";
     private static final String KEY_CLEANROOM_ENTRY = "gui.gtai.matrix.info.cleanroom.entry";
     private static final String KEY_EMPTY = "gui.gtai.matrix.info.empty";
+    private static final String KEY_CATEGORY_RUNTIME = "gui.gtai.matrix.info.category.runtime";
+    private static final String KEY_RUNTIME_STATE = "gui.gtai.matrix.info.runtime.state";
+    private static final String KEY_RUNTIME_RUNNING = "gui.gtai.matrix.info.runtime.running";
+    private static final String KEY_RUNTIME_IDLE = "gui.gtai.matrix.info.runtime.idle";
+    private static final String KEY_RUNTIME_PAUSED = "gui.gtai.matrix.info.runtime.paused";
+    private static final String KEY_RUNTIME_DISABLED = "gui.gtai.matrix.info.runtime.disabled";
+    private static final String KEY_RUNTIME_TASKS = "gui.gtai.matrix.info.runtime.tasks";
+    private static final String KEY_RUNTIME_ENERGY = "gui.gtai.matrix.info.runtime.energy";
+    private static final String KEY_RUNTIME_BUFFER = "gui.gtai.matrix.info.runtime.buffer";
+    private static final String KEY_RUNTIME_PARALLEL = "gui.gtai.matrix.info.runtime.parallel";
+    private static final String KEY_RUNTIME_SPEED = "gui.gtai.matrix.info.runtime.speed";
+    private static final String KEY_RUNTIME_TASK = "gui.gtai.matrix.info.runtime.task";
+    private static final String KEY_RUNTIME_TASK_PAUSED = "gui.gtai.matrix.info.runtime.task.paused";
+    private static final String KEY_RUNTIME_MORE = "gui.gtai.matrix.info.runtime.more";
+    private static final String KEY_RUNTIME_CORE = "gui.gtai.matrix.info.runtime.core";
+    private static final String KEY_PROCESSING_RUNTIME = "gui.gtai.matrix.info.processing.runtime";
+    private static final String KEY_PROCESSING_OVERLOAD = "gui.gtai.matrix.info.processing.overload";
+    private static final String KEY_SPEED_ENTRY_OCCUPIED = "gui.gtai.matrix.info.speed.entry.occupied";
 
     private static final String KEY_VOLTAGE_PREFIX = "gui.gtai.matrix.voltage.";
     private static final String KEY_PROCESS_PREFIX = "gui.gtai.matrix.process.";
@@ -102,6 +122,7 @@ public class MatrixInfoPage {
             return;
         }
 
+        addRuntime(view, font, width);
         addSection(view, font, width, true);
         addSection(view, font, width, false);
 
@@ -148,7 +169,90 @@ public class MatrixInfoPage {
      */
     @Nullable
     protected Component processingRuntimeStatus(MatrixStructureInfo.ProcessingCoreEntry entry) {
-        return null;
+        MatrixInfoView view = cachedView;
+        if (view == null) {
+            return null;
+        }
+        MatrixRuntimeView.ProcessRuntime runtime = processRuntime(view, entry);
+        return runtime == null ? null
+                : Component.translatable(KEY_PROCESSING_RUNTIME, runtime.active(), runtime.total());
+    }
+
+    /** 信息页顶部的运行状态分区。 */
+    private void addRuntime(MatrixInfoView view, Font font, int width) {
+        MatrixRuntimeView runtime = view.runtime();
+        addCategoryTitle(KEY_CATEGORY_RUNTIME, font, width);
+        if (runtime == null || !runtime.enabled()) {
+            addEntry(Component.translatable(KEY_RUNTIME_DISABLED), COLOR_EMPTY, font, width);
+            return;
+        }
+
+        int total = runtime.runningTasks() + runtime.pausedTasks();
+        Component state;
+        int stateColor;
+        if (total == 0) {
+            state = Component.translatable(KEY_RUNTIME_IDLE);
+            stateColor = COLOR_EMPTY;
+        } else if (runtime.runningTasks() > 0) {
+            state = Component.translatable(KEY_RUNTIME_RUNNING);
+            stateColor = COLOR_AVAILABLE;
+        } else {
+            state = Component.translatable(KEY_RUNTIME_PAUSED);
+            stateColor = COLOR_UNAVAILABLE;
+        }
+        addEntry(Component.translatable(KEY_RUNTIME_STATE, state), stateColor, font, width);
+        addEntry(Component.translatable(KEY_RUNTIME_TASKS, total, runtime.maxTasks(),
+                runtime.runningTasks(), runtime.pausedTasks()), COLOR_TEXT, font, width);
+        addEntry(Component.translatable(KEY_RUNTIME_ENERGY, runtime.euPerTick(),
+                runtime.energyStored(), runtime.energyCapacity()), COLOR_TEXT, font, width);
+        addEntry(Component.translatable(KEY_RUNTIME_BUFFER, runtime.bufferEntries(),
+                runtime.bufferCapacity(), runtime.bufferItems(), runtime.bufferFluids()), COLOR_TEXT, font, width);
+
+        for (MatrixRuntimeView.ProcessRuntime process : runtime.processes()) {
+            if (process.total() <= 0) {
+                continue;
+            }
+            addEntry(Component.translatable(KEY_RUNTIME_PARALLEL, processName(process.process()),
+                    voltageName(process.voltage()), process.active(), process.total()), COLOR_TEXT, font, width);
+        }
+        for (MatrixRuntimeView.SpeedRuntime speed : runtime.speeds()) {
+            addEntry(Component.translatable(KEY_RUNTIME_SPEED, voltageName(speed.voltage()),
+                    speed.assigned(), speed.total()), COLOR_TEXT, font, width);
+        }
+
+        if (!runtime.tasks().isEmpty()) {
+            for (MatrixRuntimeView.TaskRuntime task : runtime.tasks()) {
+                String recipe = shorten(task.recipeId(), 48);
+                if (task.paused()) {
+                    addEntry(Component.translatable(KEY_RUNTIME_TASK_PAUSED, task.slot(), recipe,
+                            task.euPerTick()), COLOR_UNAVAILABLE, font, width);
+                } else {
+                    addEntry(Component.translatable(KEY_RUNTIME_TASK, task.slot(), recipe,
+                            task.percent() + "%", task.euPerTick(),
+                            coreName(task.coreVoltage(), task.ocLevel()), task.speedCores()),
+                            COLOR_TEXT, font, width);
+                }
+            }
+            int shown = runtime.tasks().size();
+            if (total > shown) {
+                addEntry(Component.translatable(KEY_RUNTIME_MORE, total - shown), COLOR_EMPTY, font, width);
+            }
+        }
+    }
+
+    private static Component coreName(@Nullable MatrixVoltage voltage, int ocLevel) {
+        Component base = voltage == null ? Component.literal("—") : voltageName(voltage);
+        if (ocLevel <= 0) {
+            return base;
+        }
+        return Component.translatable(KEY_RUNTIME_CORE, base, "+" + ocLevel);
+    }
+
+    private static String shorten(String value, int max) {
+        if (value == null || value.isBlank()) {
+            return "—";
+        }
+        return value.length() <= max ? value : value.substring(0, max) + "…";
     }
 
     private void addSection(MatrixInfoView view, Font font, int width, boolean available) {
@@ -222,26 +326,76 @@ public class MatrixInfoPage {
 
     private void addProcessing(MatrixInfoView view, Font font, int width, boolean available) {
         List<MatrixStructureInfo.ProcessingCoreEntry> cores = view.processingCores();
-        if (!available) {
-            if (cores.isEmpty()) {
+        if (cores.isEmpty()) {
+            if (!available) {
                 addEmptyCategory(KEY_CATEGORY_PROCESSING, font, width);
             }
             return;
         }
-        if (cores.isEmpty()) {
+
+        if (available) {
+            List<Component> entries = new ArrayList<>();
+            for (MatrixStructureInfo.ProcessingCoreEntry entry : cores) {
+                MatrixRuntimeView.ProcessRuntime runtime = processRuntime(view, entry);
+                int usable = runtime == null
+                        ? entry.count()
+                        : Math.max(0, runtime.total() / Math.max(1, GtaiConfig.parallelPerProcessingCore()));
+                if (usable <= 0) {
+                    continue;
+                }
+                entries.add(Component.translatable(KEY_PROCESSING_ENTRY,
+                        voltageName(entry.voltage()), processName(entry.process()), usable));
+                if (runtime != null) {
+                    entries.add(Component.translatable(KEY_PROCESSING_RUNTIME,
+                            runtime.active(), runtime.total()));
+                }
+            }
+            if (!entries.isEmpty()) {
+                addCategory(KEY_CATEGORY_PROCESSING, entries, font, width);
+            }
             return;
         }
 
-        addCategoryTitle(KEY_CATEGORY_PROCESSING, font, width);
+        List<Component> overloaded = new ArrayList<>();
         for (MatrixStructureInfo.ProcessingCoreEntry entry : cores) {
-            addEntry(Component.translatable(KEY_PROCESSING_ENTRY,
-                    voltageName(entry.voltage()), processName(entry.process()), entry.count()),
-                    COLOR_TEXT, font, width);
-            Component runtime = processingRuntimeStatus(entry);
-            if (runtime != null) {
-                addEntry(runtime, COLOR_TEXT, font, width);
+            MatrixRuntimeView.ProcessRuntime runtime = processRuntime(view, entry);
+            if (runtime != null && runtime.overloaded() > 0) {
+                overloaded.add(Component.translatable(KEY_PROCESSING_OVERLOAD,
+                        voltageName(entry.voltage()), processName(entry.process()), runtime.overloaded()));
             }
         }
+        if (!overloaded.isEmpty()) {
+            addCategory(KEY_CATEGORY_PROCESSING, overloaded, font, width);
+        }
+    }
+
+    @Nullable
+    private static MatrixRuntimeView.ProcessRuntime processRuntime(MatrixInfoView view,
+            MatrixStructureInfo.ProcessingCoreEntry entry) {
+        MatrixRuntimeView runtime = view.runtime();
+        if (runtime == null) {
+            return null;
+        }
+        for (MatrixRuntimeView.ProcessRuntime process : runtime.processes()) {
+            if (process.process() == entry.process() && process.voltage() == entry.voltage()) {
+                return process;
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private static MatrixRuntimeView.SpeedRuntime speedRuntime(MatrixInfoView view, MatrixVoltage voltage) {
+        MatrixRuntimeView runtime = view.runtime();
+        if (runtime == null) {
+            return null;
+        }
+        for (MatrixRuntimeView.SpeedRuntime speed : runtime.speeds()) {
+            if (speed.voltage() == voltage) {
+                return speed;
+            }
+        }
+        return null;
     }
 
     private void addSpeed(MatrixInfoView view, Font font, int width, boolean available) {
@@ -257,7 +411,14 @@ public class MatrixInfoPage {
         List<Component> entries = new ArrayList<>();
         for (MatrixStructureInfo.SpeedCoreEntry entry : cores) {
             boolean usable = processingVoltages.contains(entry.voltage());
-            if (usable == available) {
+            if (usable != available) {
+                continue;
+            }
+            MatrixRuntimeView.SpeedRuntime runtime = usable ? speedRuntime(view, entry.voltage()) : null;
+            if (runtime != null) {
+                entries.add(Component.translatable(KEY_SPEED_ENTRY_OCCUPIED, voltageName(entry.voltage()),
+                        entry.count(), runtime.assigned(), runtime.total()));
+            } else {
                 entries.add(Component.translatable(KEY_SPEED_ENTRY, voltageName(entry.voltage()), entry.count()));
             }
         }
@@ -365,7 +526,11 @@ public class MatrixInfoPage {
     }
 
     private static boolean isCleanroomFamily(@Nullable MatrixFamily family) {
-        return family == MatrixFamily.ASSEMBLY || family == MatrixFamily.CIRCUIT_ASSEMBLY;
+        // 材料矩阵也开放超净间：切割机等配方会带 CleanroomCondition，信息页需要展示
+        // 超净间状态，否则玩家只能看到样板被标红却不知道原因。
+        return family == MatrixFamily.ASSEMBLY
+                || family == MatrixFamily.CIRCUIT_ASSEMBLY
+                || family == MatrixFamily.MATERIAL;
     }
 
     private static Component voltageName(MatrixVoltage voltage) {

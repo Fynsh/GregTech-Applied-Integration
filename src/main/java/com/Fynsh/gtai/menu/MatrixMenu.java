@@ -22,6 +22,7 @@ import com.Fynsh.gtai.multiblock.MatrixInfoView;
 import com.Fynsh.gtai.network.GtaiNetwork;
 import com.Fynsh.gtai.network.MatrixInfoPacket;
 import com.Fynsh.gtai.pattern.MatrixPatternRules;
+import com.Fynsh.gtai.pattern.MatrixPatternStatus;
 
 /**
  * 矩阵监控器的样板 GUI 菜单。
@@ -70,6 +71,9 @@ public class MatrixMenu extends AbstractContainerMenu {
     /** 服务端上一次发送给客户端的快照；用于避免每 tick 重复发包。 */
     @Nullable
     private MatrixInfoView lastSentInfo;
+
+    /** 上次发送运行状态快照的 gameTime；运行状态最多每 10 tick 刷新一次。 */
+    private long lastInfoSendTick = -100L;
 
     /**
      * 信息页是否隐藏全部槽位。
@@ -185,6 +189,23 @@ public class MatrixMenu extends AbstractContainerMenu {
                 && getPatternIndex(visibleIndex) < getCapacity();
     }
 
+    /**
+     * 指定绝对槽位的样板在当前矩阵中不可执行的原因。
+     *
+     * <p>客户端只从服务端同步的 {@link MatrixInfoView} 读取结论，不在本地重新判断，
+     * 避免界面与 AE 侧看到的状态不一致。返回 {@code null} 表示可执行或该槽没有样板。</p>
+     */
+    @Nullable
+    public MatrixPatternStatus blockedPatternStatus(int patternIndex) {
+        MatrixInfoView view = infoView;
+        return view == null ? null : view.blockedPatterns().get(patternIndex);
+    }
+
+    /** 可见槽位是否应叠加“不可执行”的浅红色滤镜。 */
+    public boolean isPatternBlocked(int visibleIndex) {
+        return isPatternSlotActive(visibleIndex) && blockedPatternStatus(getPatternIndex(visibleIndex)) != null;
+    }
+
     public ItemStack getPatternStack(int patternIndex) {
         return monitor == null ? ItemStack.EMPTY : monitor.getPatternStack(patternIndex);
     }
@@ -252,9 +273,13 @@ public class MatrixMenu extends AbstractContainerMenu {
         if (monitor != null && !playerInventory.player.level().isClientSide) {
             // 结构详情与运行期数据都不走方块更新包；这里只在本 tick 的值确实变化时发包。
             MatrixInfoView view = monitor.createInfoView();
-            if (!view.equals(lastSentInfo)) {
+            long now = playerInventory.player.level().getGameTime();
+            boolean structuralChanged = lastSentInfo == null || !view.sameStructure(lastSentInfo);
+            boolean runtimeChanged = !view.equals(lastSentInfo);
+            if (structuralChanged || (runtimeChanged && now - lastInfoSendTick >= 10L)) {
                 lastSentInfo = view;
                 infoView = view;
+                lastInfoSendTick = now;
                 GtaiNetwork.sendToPlayer(playerInventory.player,
                         new MatrixInfoPacket(containerId, view));
             }

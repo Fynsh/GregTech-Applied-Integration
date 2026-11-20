@@ -33,6 +33,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.RecipeManager;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -44,6 +45,8 @@ import net.minecraftforge.registries.ForgeRegistries;
 import appeng.api.networking.GridFlags;
 import appeng.api.networking.GridHelper;
 import appeng.api.networking.IGrid;
+import appeng.api.networking.IGridNode;
+import appeng.api.networking.crafting.ICraftingProvider;
 import appeng.api.networking.IGridConnection;
 import appeng.api.networking.IGridNode;
 import appeng.api.networking.IGridNodeListener;
@@ -60,10 +63,15 @@ import com.Fynsh.gtai.multiblock.MatrixFormationExplosion;
 import com.Fynsh.gtai.multiblock.MatrixMultiblockDefinition;
 import com.Fynsh.gtai.multiblock.MatrixMultiblocks;
 import com.Fynsh.gtai.multiblock.MatrixInfoView;
+import com.Fynsh.gtai.multiblock.MatrixRuntimeView;
 import com.Fynsh.gtai.multiblock.MatrixStructureInfo;
 import com.Fynsh.gtai.multiblock.MatrixStructureLayout;
 import com.Fynsh.gtai.multiblock.MatrixStructureMatch;
+import com.Fynsh.gtai.pattern.MatrixPatternEligibility;
 import com.Fynsh.gtai.pattern.MatrixPatternRules;
+import com.Fynsh.gtai.pattern.MatrixPatternStatus;
+import com.Fynsh.gtai.runtime.MatrixCraftingProvider;
+import com.Fynsh.gtai.runtime.MatrixRuntime;
 import com.Fynsh.gtai.util.TickTaskQueue;
 
 /**
@@ -221,6 +229,31 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      */
     private final Map<Integer, ItemStack> patternStacks = new TreeMap<>();
 
+    /**
+     * 样板槽 -> 可执行性判定结果。
+     *
+     * <p>只保存“矩阵能否执行这条样板”的结构性结论，不包含电量/频道等临时状态。
+     * GUI 用它绘制浅红色滤镜；后续 AE 样板供应器必须用它决定哪些样板可以对 AE 暴露，
+     * 不能直接暴露整个库存。</p>
+     */
+    private final Map<Integer, MatrixPatternStatus> patternStatuses = new TreeMap<>();
+
+    /** 需要重建 {@link #patternStatuses}；样板、结构或配方表变化时置位。 */
+    private boolean patternStatusesDirty = true;
+
+    /** 上次建表使用的配方表；数据包重载会新建 RecipeManager，据此自动失效。 */
+    @Nullable
+    private RecipeManager patternStatusesRecipeManager;
+
+    /** 配方执行器运行时：任务、速度核心占用、并行额度与离线产物缓存。 */
+    private final MatrixRuntime runtime = new MatrixRuntime(this);
+
+    /** 暴露给 AE 的样板供应器；只广告可执行样板。 */
+    private final MatrixCraftingProvider craftingProvider = new MatrixCraftingProvider(this);
+
+    /** 每次重建样板状态表时递增，供 AE 样板缓存失效。 */
+    private int patternStatusVersion;
+
     public MatrixMonitorBlockEntity(BlockPos pos, BlockState state) {
         super(MatrixBlockEntities.MATRIX_MONITOR.get(), pos, state);
     }
@@ -240,6 +273,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         if (formed || structureInfo != null) {
             suppressFormationEffects = true;
         }
+        patternStatusesDirty = true;
         refreshFormed();
 
         // 结构可能跨越尚未完成加载的区块，下一 tick 再核对一次存储值与实际结构
@@ -402,6 +436,8 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         formed = next != null;
         frameState = next == null ? null : next.frameState();
         energyHatches = next == null ? List.of() : next.energyHatches();
+        // 结构内容（核心/超净间/等级）可能已经变化，样板可执行性需要重算
+        patternStatusesDirty = true;
 
         // 接入/断开 AE：频道数 = 1 + 样板供应器等价数量
         if (next != null) {
@@ -723,6 +759,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         // 后续若增加材料缓存等持久数据，也必须在这里一起清理
         dataClearAt = -1L;
         infoLoadedFromDisk = false;
+        patternStatusesDirty = true;
         setPendingOvervoltageHatch(null);
         onStructureDataCleared();
     }
@@ -791,6 +828,10 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
             return;
         }
         scheduledTasks.runDue(serverLevel.getGameTime());
+        // 结构/样板/配方表变化后重建可执行性；未变化时只是一次引用比较。
+        ensurePatternStatuses();
+        // 推进配方任务、能量与离线产物缓存
+        runtime.tick(serverLevel);
         // 每秒兜底刷新一次实际链接数：频道被其他机器抢占、路径重算等未必每次都触发节点回调。
         if (formed && serverLevel.getGameTime() % 20L == 0L) {
             refreshLinkedChannels();
@@ -818,6 +859,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
             return;
         }
         structureInfo = info;
+        patternStatusesDirty = true;
         setChanged();
         // 结构详情只保存在存档中，客户端渲染不依赖它；后续 GUI 应使用菜单数据同步
     }
@@ -862,8 +904,15 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
                 .setIdlePowerUsage(0)
                 .setTagName("gtai_matrix_channel_" + index)
                 .setVisualRepresentation(getBlockState().getBlock());
+        if (index == 0) {
+            // 只把样板供应器挂在主频道节点上，避免 AE 看到重复的 provider。
+            node.addService(ICraftingProvider.class, craftingProvider);
+        }
         node.create(serverLevel, worldPosition);
         channelNodes.add(node);
+        if (index == 0 && node.getNode() != null) {
+            ICraftingProvider.requestUpdate(node);
+        }
     }
 
     private void clearChannels() {
@@ -1123,6 +1172,41 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         return linkedChannels;
     }
 
+    /** 样板可执行性版本号；变化时 AE 样板缓存需要重建。 */
+    public int patternStatusVersion() {
+        return patternStatusVersion;
+    }
+
+    /** 让 AE 重新读取本矩阵的样板列表。 */
+    private void requestCraftingUpdate() {
+        for (IManagedGridNode node : channelNodes) {
+            if (node.getNode() != null) {
+                ICraftingProvider.requestUpdate(node);
+            }
+        }
+    }
+
+    /**
+     * 第一个已入网的频道节点的网格；没有可用节点时返回 {@code null}。
+     *
+     * <p>仅用于把产物写回 ME 存储；频道节点本身已经决定矩阵是否接入 AE。</p>
+     */
+    @Nullable
+    public IGrid getActiveGrid() {
+        for (IManagedGridNode node : channelNodes) {
+            IGridNode gridNode = node.getNode();
+            if (gridNode != null && gridNode.getGrid() != null) {
+                return gridNode.getGrid();
+            }
+        }
+        return null;
+    }
+
+    /** 配方执行器运行时。 */
+    public MatrixRuntime runtime() {
+        return runtime;
+    }
+
     private void onChannelNodeStateChanged() {
         // AE 可能在同一 tick 为大量节点回调 CHANNEL 状态；合并到下一 tick 统计一次，
         // 避免 O(N²) 的全量遍历。
@@ -1279,17 +1363,27 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * 样板页使用的 {@link #patternCapacity()} 仍是结构总容量，两者含义不同。</p>
      */
     public MatrixInfoView createInfoView() {
+        ensurePatternStatuses();
         MatrixStructureInfo info = structureInfo;
         if (info == null) {
             return new MatrixInfoView(false, matrixFamily(), 0, 0, 0, 0,
                     false, 0, 0, 0, 0,
-                    List.of(), List.of(), List.of(), false, false, MatrixStructureInfo.FilterType.NONE, 0);
+                    List.of(), List.of(), List.of(), false, false, MatrixStructureInfo.FilterType.NONE, 0,
+                    Map.of(), MatrixRuntimeView.EMPTY);
         }
         // GUI 每 tick 都会构造快照：这里重新按实际活跃频道统计，断电/断线能立即反映到界面，
         // 而不是等待 serverTick 的 20 tick 周期兜底刷新。
         refreshLinkedChannels();
         int availableProviders = effectivePatternProviderCount();
         long availableCapacity = (long) availableProviders * GtaiConfig.patternSlotsPerProvider();
+
+        Map<Integer, MatrixPatternStatus> blockedPatterns = new TreeMap<>();
+        for (Map.Entry<Integer, MatrixPatternStatus> entry : patternStatuses.entrySet()) {
+            if (!entry.getValue().executable()) {
+                blockedPatterns.put(entry.getKey(), entry.getValue());
+            }
+        }
+
         return new MatrixInfoView(
                 info.monitorExtended(),
                 info.shellType(),
@@ -1308,7 +1402,9 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
                 info.cleanroom(),
                 info.cleanroomUsable(),
                 info.filterType(),
-                info.filterCount());
+                info.filterCount(),
+                blockedPatterns,
+                runtime.createView());
     }
 
     /**
@@ -1326,7 +1422,12 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, capacity));
     }
 
-    /** 读取绝对槽位上的样板；没有时返回 {@link ItemStack#EMPTY}。 */
+    /**
+     * 读取绝对槽位上的样板；没有时返回 {@link ItemStack#EMPTY}。
+     *
+     * <p>这是 GUI 与调试读取用的底层访问器。AE 侧不要用它枚举库存——请使用
+     * {@link #executablePatternSlots()}，否则会把不可执行的样板暴露给 AE。</p>
+     */
     public ItemStack getPatternStack(int index) {
         if (index < 0) {
             return ItemStack.EMPTY;
@@ -1346,6 +1447,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         }
         if (stack == null || stack.isEmpty()) {
             if (patternStacks.remove(index) != null) {
+                patternStatusesDirty = true;
                 setChanged();
             }
             return;
@@ -1354,6 +1456,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
         copy.setCount(1);
         ItemStack previous = patternStacks.put(index, copy);
         if (previous == null || !ItemStack.matches(previous, copy)) {
+            patternStatusesDirty = true;
             setChanged();
         }
     }
@@ -1373,6 +1476,117 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
     }
 
     /**
+     * 重建样板可执行性表。
+     *
+     * <p>触发条件：样板库存变化、结构信息变化、数据包重载（{@link RecipeManager} 实例变化）。
+     * 只做结构性判定，不读取电量/频道，因而不会随每 tick 的运行状态抖动。</p>
+     */
+    private void ensurePatternStatuses() {
+        if (!(level instanceof ServerLevel serverLevel)) {
+            return;
+        }
+        RecipeManager manager = serverLevel.getRecipeManager();
+        if (!patternStatusesDirty && manager == patternStatusesRecipeManager) {
+            return;
+        }
+        patternStatusesDirty = false;
+        patternStatusesRecipeManager = manager;
+        patternStatuses.clear();
+
+        if (!formed) {
+            finishPatternStatusesRebuild();
+            return;
+        }
+        MatrixStructureInfo info = structureInfo;
+        if (info == null) {
+            // 成型判定成功但详情收集失败：此时无法验证配方条件，按“不可执行”处理，
+            // 既不误导玩家，也不让后续 AE 暴露这些样板。
+            for (Integer slot : patternStacks.keySet()) {
+                patternStatuses.put(slot, MatrixPatternStatus.STRUCTURE_UNAVAILABLE);
+            }
+            finishPatternStatusesRebuild();
+            return;
+        }
+        for (Map.Entry<Integer, ItemStack> entry : patternStacks.entrySet()) {
+            MatrixPatternStatus status;
+            try {
+                status = MatrixPatternEligibility.check(serverLevel, info, entry.getValue());
+            } catch (RuntimeException e) {
+                // 单条样板/配方的异常不应打断整个监控器的 serverTick
+                LOGGER.error("Failed to evaluate matrix pattern at slot {} of {}", entry.getKey(), worldPosition, e);
+                status = MatrixPatternStatus.RECIPE_MISMATCH;
+            }
+            patternStatuses.put(entry.getKey(), status);
+        }
+        finishPatternStatusesRebuild();
+    }
+
+    /**
+     * 样板状态表重建完成后，统一递增版本并通知 AE。
+     *
+     * <p>必须在状态表填完之后再通知，否则 AE 可能在重建中途同步回调
+     * {@code getAvailablePatterns()}，把空表缓存到新版本号上。</p>
+     */
+    private void finishPatternStatusesRebuild() {
+        patternStatusVersion++;
+        craftingProvider.invalidate();
+        requestCraftingUpdate();
+    }
+
+    /**
+     * 指定槽位的可执行性；没有样板或结构未成型时返回
+     * {@link MatrixPatternStatus#STRUCTURE_UNAVAILABLE} / {@link MatrixPatternStatus#NOT_PATTERN}。
+     */
+    public MatrixPatternStatus patternStatus(int slot) {
+        ensurePatternStatuses();
+        ItemStack stack = patternStacks.get(slot);
+        if (stack == null || stack.isEmpty()) {
+            return MatrixPatternStatus.NOT_PATTERN;
+        }
+        return patternStatuses.getOrDefault(slot, MatrixPatternStatus.STRUCTURE_UNAVAILABLE);
+    }
+
+    /**
+     * 该槽位的样板能否被当前矩阵执行。
+     *
+     * <p>后续 AE 样板供应器在组装 {@code getAvailablePatterns()} 时必须逐槽调用本方法；
+     * 不可执行的样板不能暴露给 AE，否则会导致“能规划、不能执行”的死单。</p>
+     */
+    public boolean isPatternExecutable(int slot) {
+        if (slot < 0 || slot >= patternCapacity()) {
+            return false;
+        }
+        return patternStatus(slot).executable();
+    }
+
+    /**
+     * 当前可以对 AE 暴露的样板槽位。
+     *
+     * <p>这是 AE 暴露白名单的唯一入口：任何读取矩阵样板的 AE 侧代码都应使用它，
+     * 而不是直接遍历 {@code patternStacks}。</p>
+     */
+    public List<Integer> executablePatternSlots() {
+        ensurePatternStatuses();
+        int capacity = patternCapacity();
+        List<Integer> slots = new ArrayList<>();
+        for (Integer slot : patternStacks.keySet()) {
+            if (slot == null || slot < 0 || slot >= capacity) {
+                continue;
+            }
+            if (patternStatuses.getOrDefault(slot, MatrixPatternStatus.STRUCTURE_UNAVAILABLE).executable()) {
+                slots.add(slot);
+            }
+        }
+        return slots;
+    }
+
+    /** 可执行性快照（只读），供界面/调试使用。 */
+    public Map<Integer, MatrixPatternStatus> patternStatusesSnapshot() {
+        ensurePatternStatuses();
+        return Map.copyOf(patternStatuses);
+    }
+
+    /**
      * 把库存中的全部样板掉落到监控器位置并清空库存。
      *
      * <p>监控器被破坏或结构数据保留期结束时调用，避免样板随方块实体消失而丢失。</p>
@@ -1389,6 +1603,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
             }
         }
         patternStacks.clear();
+        patternStatusesDirty = true;
         setChanged();
     }
 
@@ -1572,6 +1787,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
                         "Matrix monitor at {} has {} saved patterns, above the supported limit {}; the rest were ignored",
                         worldPosition, patterns.size(), MAX_SAVED_PATTERNS);
             }
+            patternStatusesDirty = true;
         }
     }
 
@@ -1583,7 +1799,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * {@link #isAeNetworkOperational()} 和 {@link #isStructureValidationPending()} 判断。</p>
      */
     protected void onStructureFormed(MatrixMultiblockDefinition definition) {
-        // no-op by design: interaction logic is a later stage
+        runtime.onStructureFormed();
     }
 
     /**
@@ -1594,7 +1810,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * {@link #clearStoredData()}。</p>
      */
     protected void onStructureInvalid() {
-        // no-op by design: interaction logic is a later stage
+        runtime.onStructureInvalid();
     }
 
     /**
@@ -1604,7 +1820,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * 会读到已经失效的旧运行状态。</p>
      */
     protected void onStructureDataCleared() {
-        // no-op by design: interaction logic is a later stage
+        runtime.onDataCleared();
     }
 
     /**
@@ -1614,7 +1830,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * 等重进后由 {@link #onStructureFormed(MatrixMultiblockDefinition)} 重新启动。</p>
      */
     protected void onStructureUnloaded() {
-        // no-op by design: interaction logic is a later stage
+        runtime.onUnloaded();
     }
 
     /**
@@ -1624,7 +1840,7 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * 配方槽、进度、缓存引用等需要跨重进保留的数据应写在这里。</p>
      */
     protected void writeRuntimeData(CompoundTag tag) {
-        // no-op by design: interaction logic is a later stage
+        runtime.save(tag);
     }
 
     /**
@@ -1634,6 +1850,6 @@ public class MatrixMonitorBlockEntity extends AEBaseBlockEntity implements MenuP
      * 并在随后的 {@link #onStructureFormed(MatrixMultiblockDefinition)} 中校验结构是否仍匹配。</p>
      */
     protected void readRuntimeData(CompoundTag tag) {
-        // no-op by design: interaction logic is a later stage
+        runtime.load(tag);
     }
 }

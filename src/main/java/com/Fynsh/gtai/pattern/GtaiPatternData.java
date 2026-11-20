@@ -1,9 +1,11 @@
 package com.Fynsh.gtai.pattern;
 
+import org.jetbrains.annotations.Nullable;
+
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraft.nbt.CompoundTag;
 
 import appeng.api.stacks.AEItemKey;
 
@@ -38,6 +40,32 @@ public final class GtaiPatternData {
     }
 
     /**
+     * 读取样板记录的配方类型；没有记录或格式非法时返回 {@code null}。
+     */
+    @Nullable
+    public static ResourceLocation recipeType(ItemStack stack) {
+        return stack == null || stack.isEmpty() ? null : recipeType(stack.getTag());
+    }
+
+    @Nullable
+    public static ResourceLocation recipeType(@Nullable CompoundTag tag) {
+        return readId(tag, TAG_RECIPE_TYPE);
+    }
+
+    /**
+     * 读取样板记录的配方 id；没有记录或格式非法时返回 {@code null}。
+     */
+    @Nullable
+    public static ResourceLocation recipeId(ItemStack stack) {
+        return stack == null || stack.isEmpty() ? null : recipeId(stack.getTag());
+    }
+
+    @Nullable
+    public static ResourceLocation recipeId(@Nullable CompoundTag tag) {
+        return readId(tag, TAG_RECIPE_ID);
+    }
+
+    /**
      * 检查样板记录的配方是否仍然存在。
      *
      * <p>没有记录配方信息（例如旧存档中的样板）或当前没有世界上下文时一律视为有效，
@@ -52,8 +80,9 @@ public final class GtaiPatternData {
         return com.Fynsh.gtai.recipe.GtRecipeLookup.exists(level, recipeType, recipeId);
     }
 
-    private static ResourceLocation readId(CompoundTag tag, String key) {
-        if (!tag.contains(key, CompoundTag.TAG_STRING)) {
+    @Nullable
+    private static ResourceLocation readId(@Nullable CompoundTag tag, String key) {
+        if (tag == null || !tag.contains(key, CompoundTag.TAG_STRING)) {
             return null;
         }
         return ResourceLocation.tryParse(tag.getString(key));

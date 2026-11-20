@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.lwjgl.glfw.GLFW;
 
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
@@ -11,12 +12,14 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
 
 import com.Fynsh.gtai.GTAIMod;
 import com.Fynsh.gtai.block.MatrixFamily;
 import com.Fynsh.gtai.menu.MatrixMenu;
 import com.Fynsh.gtai.menu.MatrixPatternSlot;
 import com.Fynsh.gtai.multiblock.MatrixInfoView;
+import com.Fynsh.gtai.pattern.MatrixPatternStatus;
 
 /**
  * 矩阵监控器 GUI。
@@ -63,6 +66,9 @@ public class MatrixScreen extends AbstractContainerScreen<MatrixMenu> {
     private static final int INFO_SCROLL_WIDTH = 10;
     private static final int INFO_SCROLL_HEIGHT = INFO_CONTENT_HEIGHT;
     private static final int INFO_SCROLL_THUMB_MIN = 12;
+
+    /** 不可执行样板槽的浅红色半透明滤镜（ARGB，40% 不透明度）。 */
+    private static final int BLOCKED_PATTERN_OVERLAY = 0x66FF8080;
 
     private static final String KEY_TAB_INFO = "gui.gtai.matrix.tab.info";
     private static final String KEY_TAB_PATTERNS = "gui.gtai.matrix.tab.patterns";
@@ -111,7 +117,11 @@ public class MatrixScreen extends AbstractContainerScreen<MatrixMenu> {
         if (infoPage) {
             // 信息页不渲染槽位；清掉悬停槽，避免数字键等在切页后误交换物品
             this.hoveredSlot = null;
+            return;
         }
+        // 1.20.1 的 AbstractContainerScreen 不再自动绘制槽位 tooltip，由屏幕自行调用。
+        // 这里显式调用，同时让 renderTooltip 在提示框之前叠加“不可执行”滤镜。
+        renderTooltip(guiGraphics, mouseX, mouseY);
     }
 
     @Override
@@ -203,7 +213,46 @@ public class MatrixScreen extends AbstractContainerScreen<MatrixMenu> {
         if (infoPage) {
             return;
         }
+        // 在槽位物品绘制之后、tooltip 绘制之前叠加滤镜：
+        // 这样滤镜覆盖在样板上，又不会把提示框本身染红。
+        renderBlockedPatternOverlays(guiGraphics);
         super.renderTooltip(guiGraphics, mouseX, mouseY);
+    }
+
+    /**
+     * 给当前不可执行的样板槽叠加浅红色滤镜。
+     *
+     * <p>判定结果来自服务端同步的 {@link MatrixInfoView}，客户端不重新计算配方条件。</p>
+     */
+    private void renderBlockedPatternOverlays(GuiGraphics guiGraphics) {
+        for (MatrixPatternSlot slot : menu.getPatternSlots()) {
+            if (!slot.isActive() || menu.blockedPatternStatus(slot.getPatternIndex()) == null) {
+                continue;
+            }
+            guiGraphics.fill(leftPos + slot.x, topPos + slot.y,
+                    leftPos + slot.x + 16, topPos + slot.y + 16, BLOCKED_PATTERN_OVERLAY);
+        }
+    }
+
+    /**
+     * 悬停在不可执行样板上时追加原因说明。
+     *
+     * <p>只对样板槽生效；普通物品栏与信息页保持原版 tooltip。</p>
+     */
+    @Override
+    protected List<Component> getTooltipFromContainerItem(ItemStack stack) {
+        List<Component> tooltip = super.getTooltipFromContainerItem(stack);
+        if (infoPage || !(hoveredSlot instanceof MatrixPatternSlot slot) || !slot.isActive()) {
+            return tooltip;
+        }
+        MatrixPatternStatus status = menu.blockedPatternStatus(slot.getPatternIndex());
+        if (status != null) {
+            tooltip.add(Component.translatable("gui.gtai.matrix.pattern.blocked")
+                    .withStyle(ChatFormatting.RED));
+            tooltip.add(Component.translatable("gui.gtai.matrix.pattern.blocked." + status.id())
+                    .withStyle(ChatFormatting.GRAY));
+        }
+        return tooltip;
     }
 
     @Override

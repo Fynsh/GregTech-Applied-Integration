@@ -534,10 +534,10 @@ public record MatrixStructureInfo(
         /** 没有超净间，或超净间内没有过滤器。 */
         NONE("none"),
 
-        /** 只有超净过滤器。 */
+        /** 只有超净过滤器；只满足 {@code CleanroomType.CLEANROOM} 配方。 */
         CLEANROOM("cleanroom"),
 
-        /** 只有无菌过滤器。 */
+        /** 只有无菌过滤器；只满足 {@code CleanroomType.STERILE_CLEANROOM} 配方。 */
         STERILE("sterile"),
 
         /** 超净过滤器与无菌过滤器混用，监控器判定为不可用。 */

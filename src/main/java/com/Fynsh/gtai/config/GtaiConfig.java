@@ -22,6 +22,24 @@ public final class GtaiConfig {
     private static final ForgeConfigSpec.IntValue CHANNEL_BASE;
     private static final ForgeConfigSpec.IntValue CHANNEL_PER_PATTERN_PROVIDER;
     private static final ForgeConfigSpec.IntValue PATTERN_SLOTS_PER_PROVIDER;
+    private static final ForgeConfigSpec.BooleanValue RUNTIME_ENABLED;
+    private static final ForgeConfigSpec.IntValue MAX_CONCURRENT_TASKS;
+    private static final ForgeConfigSpec.IntValue PARALLEL_PER_PROCESSING_CORE;
+    private static final ForgeConfigSpec.IntValue MAX_PARALLEL_PER_VOLTAGE;
+    private static final ForgeConfigSpec.IntValue MAX_SPEED_CORES_PER_TASK;
+    private static final ForgeConfigSpec.DoubleValue SPEED_CORE_REDUCTION;
+    private static final ForgeConfigSpec.IntValue MIN_DURATION_TICKS;
+    private static final ForgeConfigSpec.EnumValue<PowerLossPolicy> ON_POWER_LOSS;
+    private static final ForgeConfigSpec.IntValue OUTPUT_BUFFER_ENTRIES;
+    private static final ForgeConfigSpec.BooleanValue STRICT_RECIPE_VALIDATION;
+
+    /** 断电时对运行中任务的处理方式。 */
+    public enum PowerLossPolicy {
+        /** 暂停任务、进度清零、保留输入；恢复供电后从头开始。 */
+        RESET_PROGRESS,
+        /** 取消任务并删除输入。 */
+        CONSUME_INPUTS
+    }
 
     static {
         ForgeConfigSpec.Builder builder = new ForgeConfigSpec.Builder();
@@ -88,6 +106,42 @@ public final class GtaiConfig {
 
         builder.pop();
 
+        builder.comment("Matrix recipe runtime settings.")
+                .push("runtime");
+        RUNTIME_ENABLED = builder
+                .comment("Enable the pattern executor. When false the matrix only stores patterns and exposes none to AE.")
+                .define("enabled", true);
+        MAX_CONCURRENT_TASKS = builder
+                .comment("Maximum concurrently running recipe tasks per matrix. Range: 1..4096.")
+                .defineInRange("maxConcurrentTasks", 64, 1, 4096);
+        PARALLEL_PER_PROCESSING_CORE = builder
+                .comment("Parallel recipes provided by one equivalent processing core. Range: 1..64.")
+                .defineInRange("parallelPerProcessingCore", 2, 1, 64);
+        MAX_PARALLEL_PER_VOLTAGE = builder
+                .comment("Maximum parallel recipes at one voltage tier, shared by all processing types. "
+                        + "Excess processing cores are treated as unavailable. Range: 1..1024.")
+                .defineInRange("maxParallelPerVoltage", 16, 1, 1024);
+        MAX_SPEED_CORES_PER_TASK = builder
+                .comment("Maximum equivalent speed cores assigned to a single task. Range: 0..8.")
+                .defineInRange("maxSpeedCoresPerTask", 2, 0, 8);
+        SPEED_CORE_REDUCTION = builder
+                .comment("Duration reduction per assigned equivalent speed core. 0.25 = -25% processing time per core. Range: 0.0..0.9.")
+                .defineInRange("speedCoreReduction", 0.25D, 0.0D, 0.9D);
+        MIN_DURATION_TICKS = builder
+                .comment("Lower bound for a task duration after overclock and speed core reduction. Range: 1..72000.")
+                .defineInRange("minDurationTicks", 1, 1, 72000);
+        ON_POWER_LOSS = builder
+                .comment("Behavior when a running task cannot pay its EU/t: RESET_PROGRESS keeps inputs and resets progress, CONSUME_INPUTS cancels and voids inputs.")
+                .defineEnum("onPowerLoss", PowerLossPolicy.RESET_PROGRESS);
+        OUTPUT_BUFFER_ENTRIES = builder
+                .comment("Distinct GenericStack entries buffered per monitor when outputs cannot be inserted into AE. Range: 1..4096.")
+                .defineInRange("outputBufferEntries", 64, 1, 4096);
+        STRICT_RECIPE_VALIDATION = builder
+                .comment("Validate pattern outputs against the GT recipe before exposing or running it. "
+                        + "Inputs are not validated because JEI encoding drops non-consumed items.")
+                .define("strictRecipeValidation", true);
+        builder.pop();
+
         SPEC = builder.build();
     }
 
@@ -137,5 +191,48 @@ public final class GtaiConfig {
     /** 每份等价的集成样板供应器提供的样板槽数。 */
     public static int patternSlotsPerProvider() {
         return Math.max(1, PATTERN_SLOTS_PER_PROVIDER.get());
+    }
+
+    /** 是否启用矩阵配方执行器。 */
+    public static boolean runtimeEnabled() {
+        return RUNTIME_ENABLED.get();
+    }
+
+    public static int maxConcurrentTasks() {
+        return Math.max(1, MAX_CONCURRENT_TASKS.get());
+    }
+
+    public static int parallelPerProcessingCore() {
+        return Math.max(1, PARALLEL_PER_PROCESSING_CORE.get());
+    }
+
+    /** 每个电压等级的最大并行数（该电压下所有处理类型共享）。 */
+    public static int maxParallelPerVoltage() {
+        return Math.max(1, MAX_PARALLEL_PER_VOLTAGE.get());
+    }
+
+    public static int maxSpeedCoresPerTask() {
+        return Math.max(0, MAX_SPEED_CORES_PER_TASK.get());
+    }
+
+    /** 每个等价速度核心减少的时长比例（0.25 = 25%）。 */
+    public static double speedCoreReduction() {
+        return Math.max(0.0D, Math.min(0.9D, SPEED_CORE_REDUCTION.get()));
+    }
+
+    public static int minDurationTicks() {
+        return Math.max(1, MIN_DURATION_TICKS.get());
+    }
+
+    public static PowerLossPolicy onPowerLoss() {
+        return ON_POWER_LOSS.get();
+    }
+
+    public static int outputBufferEntries() {
+        return Math.max(1, OUTPUT_BUFFER_ENTRIES.get());
+    }
+
+    public static boolean strictRecipeValidation() {
+        return STRICT_RECIPE_VALIDATION.get();
     }
 }

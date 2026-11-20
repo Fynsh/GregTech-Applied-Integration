@@ -1,7 +1,10 @@
 package com.Fynsh.gtai.recipe;
 
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -36,6 +39,13 @@ public final class GtRecipeLookup {
     private static final Map<RecipeManager, Map<RecipeKey, Boolean>> RESULT_CACHE = Collections
             .synchronizedMap(new WeakHashMap<>());
 
+    /**
+     * 配方对象缓存：可执行性判定需要读取配方的类型、EU 与条件，不能只缓存“存在”布尔值。
+     * 键同样按 {@link RecipeManager} 实例隔离，数据包重载后旧缓存自然失效。
+     */
+    private static final Map<RecipeManager, RecipeLookupCache> RECIPE_CACHE = Collections
+            .synchronizedMap(new WeakHashMap<>());
+
     private GtRecipeLookup() {
     }
 
@@ -62,6 +72,62 @@ public final class GtRecipeLookup {
         }
         RecipeKey key = new RecipeKey(typeId, recipeId);
         return cache.computeIfAbsent(key, ignored -> lookup(manager, key));
+    }
+
+    /**
+     * 按配方类型与配方 id 取回 {@link GTRecipe}；不存在或类型不匹配时返回 {@code null}。
+     *
+     * <p>与 {@link #exists(Level, ResourceLocation, ResourceLocation)} 不同，本方法把
+     * “找不到”如实返回，供样板可执行性判定使用；{@code exists} 仍保留原来的宽松语义，
+     * 用于样板解码时的失效检测。</p>
+     */
+    @Nullable
+    public static GTRecipe find(Level level, ResourceLocation typeId, ResourceLocation recipeId) {
+        if (level == null || typeId == null || recipeId == null) {
+            return null;
+        }
+        RecipeManager manager = level.getRecipeManager();
+        RecipeLookupCache cache;
+        synchronized (RECIPE_CACHE) {
+            cache = RECIPE_CACHE.computeIfAbsent(manager, ignored -> new RecipeLookupCache());
+        }
+        RecipeKey key = new RecipeKey(typeId, recipeId);
+        synchronized (cache) {
+            if (cache.misses.contains(key)) {
+                return null;
+            }
+            GTRecipe cached = cache.hits.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            GTRecipe found = lookupRecipe(manager, key);
+            if (found == null) {
+                cache.misses.add(key);
+            } else {
+                cache.hits.put(key, found);
+            }
+            return found;
+        }
+    }
+
+    @Nullable
+    private static GTRecipe lookupRecipe(RecipeManager manager, RecipeKey key) {
+        GTRecipeType type = findType(key.type());
+        if (type == null) {
+            return null;
+        }
+
+        var byKey = manager.byKey(key.id());
+        if (byKey.isPresent() && byKey.get() instanceof GTRecipe recipe && recipe.getType() == type) {
+            return recipe;
+        }
+
+        for (GTRecipe recipe : manager.getAllRecipesFor(type)) {
+            if (key.id().equals(recipe.getId())) {
+                return recipe;
+            }
+        }
+        return null;
     }
 
     private static boolean lookup(RecipeManager manager, RecipeKey key) {
@@ -97,5 +163,12 @@ public final class GtRecipeLookup {
      * 并非不可能；把类型一起放进键里，避免两次查询互相污染缓存。</p>
      */
     private record RecipeKey(ResourceLocation type, ResourceLocation id) {
+    }
+
+    /** 一个 {@link RecipeManager} 对应的命中/未命中缓存；只在持有该缓存的同步块内访问。 */
+    private static final class RecipeLookupCache {
+
+        private final Map<RecipeKey, GTRecipe> hits = new HashMap<>();
+        private final Set<RecipeKey> misses = new HashSet<>();
     }
 }
